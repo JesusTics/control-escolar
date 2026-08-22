@@ -73,6 +73,85 @@ todas las calificaciones del alumno) y si está aprobado en cada materia
 (`estaAprobado` aplicado a la calificación individual — no hay promedio por
 materia todavía, es una sola calificación por materia/periodo).
 
+### Asistencia
+
+Alcance actual (mínimo): asistencia diaria general del plantel — **un
+registro por alumno por día**, no por materia/clase individual. Es una
+simplificación consciente y razonable para el MVP, igual que en primaria/
+secundaria mexicana se toma lista una vez al día (ver alcance explícito de
+la sesión). Explícitamente fuera de este alcance: asistencia por materia,
+reportes de tendencias, y notificaciones automáticas a padres por
+inasistencia (eso corresponde al módulo Comunicación, todavía no
+implementado).
+
+**Casos de uso** (`src/modules/asistencia/casos-uso/`):
+`registrar-asistencia-del-dia`, `obtener-asistencia-alumno`,
+`listar-alumnos-para-captura`. Mismo patrón de cliente de Supabase inyectado
+que Alumnos/Calificaciones/Identidad. Se aplica hexagonal ligero aquí de
+forma explícita — CLAUDE.md 4.1 usa Asistencia, junto con Calificaciones e
+Identidad/Roles, como ejemplo textual de "lógica de negocio no trivial".
+
+`listar-alumnos-para-captura` filtra explícitamente por `estado = 'activo'`
+en vez de reusar `listar-alumnos` (que lista todos los alumnos sin importar
+estado, para el directorio general) — no tiene sentido tomar asistencia de
+un alumno dado de baja, y ese filtro es una regla propia de este caso de
+uso, no del listado general de Alumnos.
+
+**Lógica de dominio pura** (`src/modules/asistencia/dominio/asistencia.ts`):
+`calcularPorcentajeAsistencia(registros)`. Regla de negocio no obvia,
+documentada en el propio código: `presente` y `retardo` cuentan como
+asistencia (a favor); `ausente` cuenta en el denominador pero no a favor;
+`justificado` se **excluye por completo** del cálculo (ni numerador ni
+denominador) — una ausencia justificada no debería penalizar el porcentaje
+del alumno, pero tampoco equivale a haber asistido. Devuelve `null` si no
+hay registros no-justificados, nunca divide entre cero (mismo criterio que
+`calcularPromedio` en Calificaciones). Sin dependencias de Supabase ni de
+red — testeable en aislamiento total, cubierta por
+`tests/dominio/asistencia.test.ts`.
+
+**Decisión de diseño — upsert masivo en vez de insert por alumno**:
+`registrar-asistencia-del-dia` recibe el arreglo completo de
+`{alumno_id, estado}` de un día y hace un solo `.upsert()` con
+`onConflict: 'alumno_id,fecha'` — una sola llamada de red para toda la lista,
+no una petición por alumno (CLAUDE.md 7 pide explícitamente "modo
+asistido/wizard para... captura masiva"). Volver a capturar la asistencia
+del mismo día para el mismo alumno corrige el registro existente en vez de
+fallar por violación de unicidad, mismo criterio que
+`registrar-calificacion.ts` en Calificaciones — no hay un caso de uso de
+edición/corrección separado, re-capturar ES la forma de corregir.
+
+**Tabla `public.asistencias`**, definida en
+`supabase/migrations/20260822190214_asistencia_diaria.sql`.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_asistencias_plantel_id`) |
+| `alumno_id` | `uuid` | `not null`, referencia `alumnos(id)`. Indexado (`idx_asistencias_alumno_id`) |
+| `fecha` | `date` | Obligatoria |
+| `estado` | `text` | `not null`, `check` restringido a `presente`/`ausente`/`retardo`/`justificado` |
+| `created_at` / `updated_at` | `timestamptz` | Default `now()` |
+
+Restricción `unique(alumno_id, fecha)` — un solo registro de asistencia por
+alumno/día, es la que habilita el patrón de `upsert` masivo del caso de uso.
+
+RLS habilitada. Tres políticas, mismo criterio de roles que
+`calificaciones` (incluye `docente` en `INSERT`/`UPDATE` porque tomar
+asistencia es tarea docente en la vida real, aunque hoy no exista todavía un
+flujo de alta de usuarios con ese rol):
+
+- `asistencias_select_mismo_plantel`: cualquier usuario autenticado del
+  plantel puede ver las asistencias de su plantel.
+- `asistencias_insert_staff_mismo_plantel` /
+  `asistencias_update_staff_mismo_plantel`: solo `administrativo`,
+  `oficina_central` o `docente` del mismo plantel.
+
+**Cubierta desde el primer commit** por `tests/aislamiento-asistencia.test.ts`
+(CLAUDE.md 4.3) — ver/no-ver registro de asistencia ajeno, spoofing de
+`plantel_id` rechazado por RLS. Usa una fecha fija determinista
+(`2026-01-15`) para que la corrida sea idempotente entre ejecuciones (el
+upsert por `alumno_id,fecha` no duplica filas).
+
 ### Identidad/Roles
 
 Alcance actual (mínimo): login con email + contraseña, alta del primer

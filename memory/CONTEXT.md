@@ -178,9 +178,42 @@ primer cliente real tenga un solo plantel.
   aislamiento de alumnos, sigue en verde). `npm run build` sí pasa completo
   sin aplicar nada, porque no depende de las tablas en build time.
 
+- 2026-08-22: Se implementó el módulo Asistencia mínimo (siguiente módulo
+  del roadmap del MVP tras Calificaciones/Kardex): asistencia diaria general
+  del plantel (un registro por alumno por día, no por materia/clase
+  individual — simplificación consciente para el MVP), captura masiva en
+  `/asistencia` (upsert por `alumno_id,fecha`, una sola Server Action con el
+  arreglo completo de la lista), y sección de asistencia (porcentaje +
+  últimos registros) agregada al kardex existente en `/alumnos/[id]`.
+  Migración nueva
+  `supabase/migrations/20260822190214_asistencia_diaria.sql` con la tabla
+  `asistencias`, RLS habilitada, e índices en `plantel_id`/`alumno_id` —
+  **pendiente de aplicar manualmente en el SQL Editor de Supabase**, igual
+  que las migraciones anteriores. Lógica de dominio pura
+  (`calcularPorcentajeAsistencia`) en
+  `src/modules/asistencia/dominio/asistencia.ts`, aplicando hexagonal ligero
+  de forma explícita (CLAUDE.md 4.1 usa Asistencia como uno de los ejemplos
+  textuales). Regla de negocio no obvia documentada en el código: `retardo`
+  cuenta como asistencia, `ausente` penaliza, `justificado` se excluye por
+  completo del cálculo (ni numerador ni denominador). Test de aislamiento
+  multi-tenant en el mismo commit que la tabla nueva
+  (`tests/aislamiento-asistencia.test.ts`), como exige CLAUDE.md 4.3, con
+  fecha fija determinista (`2026-01-15`) para idempotencia entre corridas.
+  Detalle completo en [ARCHITECTURE.md](../docs/ARCHITECTURE.md#asistencia).
+
+  **Pendiente antes de que `npm test` pase en verde completo** (mismo patrón
+  que quedó documentado al implementar Calificaciones): aplicar la migración
+  nueva en el proyecto de Supabase de desarrollo — sin ella,
+  `tests/aislamiento-asistencia.test.ts` falla con "Could not find the table
+  'public.asistencias'" (el resto de la suite, dominio y aislamiento de
+  alumnos/calificaciones, sigue en verde: 27 tests pasan, 3 se saltan por
+  ese archivo). `npm run build` y `npm run lint` sí pasan completos sin
+  aplicar nada, porque no dependen de la tabla en build time.
+
 ## Próximo paso
 
-Con Identidad/Roles, Alumnos y Calificaciones/Kardex mínimos funcionando,
-el siguiente paso natural es Asistencia (depende de Alumnos igual que
-Calificaciones) o Comunicación, o configurar los tests de aislamiento en CI
-(GitHub Actions) — pendiente no bloqueante desde la sesión anterior.
+Con Identidad/Roles, Alumnos, Calificaciones/Kardex y Asistencia mínimos
+funcionando, el siguiente paso natural es Comunicación (cierra el ciclo
+completo de valor de la Oleada 1 del MVP, CLAUDE.md sección 3), o configurar
+los tests de aislamiento en CI (GitHub Actions) — pendiente no bloqueante
+desde sesiones anteriores.
