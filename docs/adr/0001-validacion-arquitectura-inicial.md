@@ -62,6 +62,52 @@ ajustes (ya aplicados en `/CLAUDE.md`):
 - Queda documentado AWS `mx-central-1` como opción de escape si aparece un
   requisito contractual de residencia física en México en Oleada 2+.
 
+## Adenda (2026-08-22): estrategia de testing de aislamiento RLS
+
+Este ADR dejó documentado como pendiente "los tests de aislamiento
+multi-tenant... contra el SDK cliente, nunca contra el SQL Editor" (CLAUDE.md
+4.3), sin resolver el "cómo" — el enfoque obvio, Supabase CLI local con
+Docker, contradice el principio de "evitar Docker" del stack (sección 6)
+para un equipo de una persona.
+
+**Decisión**: los tests de aislamiento corren con Vitest +
+`@supabase/supabase-js` contra el **proyecto Supabase remoto de desarrollo
+real** (las mismas credenciales `NEXT_PUBLIC_SUPABASE_URL`/`ANON_KEY` de
+`.env.local` que usa la app), usando **cuentas de prueba fijas y
+reutilizables** (`test-aislamiento-a@controlescolar.test`,
+`test-aislamiento-b@controlescolar.test`) en vez de cuentas efímeras creadas
+y destruidas en cada corrida. Implementado en `tests/`, correr con
+`npm test`.
+
+**Por qué cuentas fijas y no efímeras**: crear/destruir cuentas en cada
+corrida requeriría `service_role` para poder limpiar datos de otro usuario al
+final del test (un cliente `anon` autenticado como usuario A no puede borrar
+las filas de B — la misma RLS que se está probando lo impide, correctamente).
+Usar `service_role` en los tests para poder limpiar contradice el mismo
+principio que se está verificando (CLAUDE.md 4.3: "`service_role` nunca se
+usa en el flujo normal"). Con cuentas fijas y reutilizables no hace falta
+limpiar nada: el helper (`tests/helpers/cuenta-prueba.ts`) es idempotente —
+intenta iniciar sesión primero, y solo si la cuenta no existe hace `signUp` +
+alta de plantel/perfil vía el mismo RPC `crear_plantel_y_perfil_inicial` que
+usa la app. Los casos de negocio (ej. inscribir un alumno) usan matrículas
+fijas y deterministas, tratando "ya existe de una corrida anterior" como
+éxito esperado, no como fallo.
+
+**Trade-off aceptado**: estas dos cuentas de prueba y sus datos (un plantel,
+un perfil, un alumno cada una) viven **permanentemente** en el proyecto
+Supabase de desarrollo — no es efímero ni se limpia solo. Se acepta porque
+(a) es el proyecto de *desarrollo*, nunca producción, y (b) el volumen es
+trivial (dos cuentas, un puñado de filas) y no crece con cada corrida al ser
+idempotente. Esto evita meter Docker al stack **y** evita la excepción de
+`service_role` en el mismo movimiento — las dos alternativas que se querían
+descartar explícitamente.
+
+**Consecuencia sobre CI**: como estos tests dependen de red real y de
+credenciales de un proyecto Supabase específico, correrlos en GitHub Actions
+(sección 5) requiere exponer esas credenciales `anon` (no sensibles por
+diseño — son públicas en el bundle del cliente) como secretos del repo. Queda
+como tarea de la configuración de CI, no bloquea esta decisión de diseño.
+
 ## Fuentes usadas en la validación
 
 - Supabase RLS Best Practices — makerkit.dev

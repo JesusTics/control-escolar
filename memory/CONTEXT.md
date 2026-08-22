@@ -44,12 +44,9 @@ primer cliente real tenga un solo plantel.
   [ARCHITECTURE.md](../docs/ARCHITECTURE.md#modelo-de-datos). Pendiente:
   (1) el usuario debe aplicar esta migración manualmente en el SQL Editor
   del dashboard de Supabase (todavía no hay CLI vinculado al proyecto
-  remoto ni token configurado); (2) sigue sin resolver la estrategia de
-  testing automatizado de aislamiento RLS mencionada como pendiente en
-  [ADR-0001](../docs/adr/0001-validacion-arquitectura-inicial.md) —
-  probablemente requiera Supabase CLI local con Docker, lo cual contradice
-  el principio actual de "evitar Docker" del stack; es una decisión a
-  tomar en una sesión futura, no en esta.
+  remoto ni token configurado); (2) ~~sigue sin resolver la estrategia de
+  testing automatizado de aislamiento RLS...~~ **resuelto el 2026-08-22**,
+  ver entrada correspondiente más abajo.
 
 - 2026-08-22: Se implementó el módulo Identidad/Roles mínimo: login,
   onboarding del primer plantel+usuario, sesión protegida. Migración
@@ -78,19 +75,87 @@ primer cliente real tenga un solo plantel.
   cifrado en reposo (CLAUDE.md 4.4), no implementado todavía. Detalle en
   [ARCHITECTURE.md](../docs/ARCHITECTURE.md#public-alumnos).
 
-  **Deuda técnica registrada explícitamente**: esta tabla se creó sin el
-  test automático de aislamiento multi-tenant que CLAUDE.md 4.3 exige "desde
-  el primer commit que toque una tabla nueva" — no es un olvido, es el mismo
-  pendiente de estrategia de testing (Supabase CLI + Docker vs. alternativa)
-  ya documentado como no resuelto en
-  [ADR-0001](../docs/adr/0001-validacion-arquitectura-inicial.md) y en la
-  entrada de la fundación multi-tenant arriba. Queda como riesgo abierto que
-  debe resolverse antes de cualquier release, no solo para `alumnos` sino
-  para toda tabla con RLS del proyecto.
+  **Deuda técnica registrada explícitamente en su momento**: esta tabla se
+  creó sin el test automático de aislamiento multi-tenant que CLAUDE.md 4.3
+  exige "desde el primer commit que toque una tabla nueva" — **resuelto el
+  2026-08-22**, ver entrada correspondiente más abajo. Ya no es un riesgo
+  abierto.
+
+- 2026-08-22: Se resolvió la estrategia de testing de aislamiento
+  multi-tenant (RLS) que había quedado pendiente desde la fundación de la
+  base de datos y desde el alta de `alumnos` (ver entradas arriba, ambas
+  actualizadas). Decisión: Vitest + `@supabase/supabase-js` corriendo contra
+  el **proyecto Supabase remoto de desarrollo real** (no Supabase CLI local
+  con Docker, que hubiera contradicho el principio de "evitar Docker" del
+  stack), con dos cuentas de prueba fijas y reutilizables
+  (`test-aislamiento-a@controlescolar.test` /
+  `test-aislamiento-b@controlescolar.test`) en vez de cuentas efímeras — así
+  se evita tanto Docker como la necesidad de `service_role` para limpiar
+  datos entre corridas (`service_role` está prohibido en el flujo normal por
+  CLAUDE.md 4.3). Trade-off aceptado explícitamente: esas cuentas y sus
+  datos (un plantel, un perfil, un alumno cada una) viven permanentemente en
+  el proyecto de desarrollo — aceptable por no ser producción y por volumen
+  trivial. Detalle completo en la adenda de
+  [ADR-0001](../docs/adr/0001-validacion-arquitectura-inicial.md#adenda-2026-08-22-estrategia-de-testing-de-aislamiento-rls)
+  y en [ARCHITECTURE.md](../docs/ARCHITECTURE.md#testing-de-aislamiento-multi-tenant-rls).
+  Cubre los 5 casos exigidos por CLAUDE.md 4.3 (ver/no-ver plantel y perfil
+  ajenos, ver/no-ver alumno ajeno, spoofing de `plantel_id` rechazado por
+  RLS) en `tests/aislamiento-multitenant.test.ts` — corre con `npm test`, 8
+  tests, todos verdes. Pendiente (no bloqueante): configurar estos tests en
+  CI (GitHub Actions), lo que requiere exponer las credenciales `anon` de
+  desarrollo como secretos del repo — son públicas por diseño (viven en el
+  bundle del cliente), no un secreto sensible.
+
+- 2026-08-22: Se resolvió el pendiente de confirmación de email en
+  Identidad/Roles (quedaba explícito en la entrada anterior y en
+  ARCHITECTURE.md como "caso borde sin resolver"). Ahora `/registro` guarda
+  `nombre_plantel`/`nombre_completo` como user metadata de Supabase Auth al
+  hacer `signUp` (con `emailRedirectTo` apuntando a `/auth/callback`), y el
+  nuevo Route Handler `src/app/auth/callback/route.ts` intercambia el `code`
+  de confirmación por sesión, completa el alta de plantel/perfil (reutiliza
+  `registrar-plantel-inicial`, sin duplicar lógica) leyendo esa metadata, y
+  redirige a `/dashboard` — o a `/login?error=...` (mostrado ahora por
+  `src/app/login/page.tsx`) si algo falla. El camino sin confirmación
+  (`signUp` con sesión inmediata) no cambió de comportamiento. Detalle
+  completo en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#identidadroles).
+
+  **Decisión explícita del usuario, no técnica**: la confirmación de email
+  ("Confirm email" en Authentication → Settings) **sigue desactivada** en el
+  proyecto de Supabase de **desarrollo** — no se cambió en esta sesión. El
+  código ya soporta ambos modos (`npm run build` y `npm test`, 8 tests,
+  siguen pasando sin activarla), pero el camino con confirmación activada
+  **no se ha probado manualmente todavía** porque este entorno no tiene forma
+  de recibir/confirmar un correo real. Pasos exactos para cuando se decida
+  probarlo:
+  1. En el dashboard de Supabase del proyecto de desarrollo: Authentication →
+     Settings → activar "Confirm email".
+  2. Ir a `/registro` en la app corriendo localmente (`npm run dev`) y
+     registrar una cuenta nueva con un correo real al que se tenga acceso.
+     Debe aparecer el mensaje "Cuenta creada. Revisa tu correo..." (no debe
+     redirigir directo a `/dashboard`).
+  3. Revisar la bandeja de entrada de ese correo: debe llegar un email de
+     Supabase con un link cuyo destino final sea `/auth/callback?code=...`
+     sobre el dominio/puerto donde corre la app (verificar que el `origin`
+     capturado en el Server Action —`localhost:3000` en local— sea correcto;
+     si el correo llega con la URL de Supabase por defecto en vez del origen
+     de la app, revisar la configuración de "Site URL"/"Redirect URLs" en
+     Authentication → URL Configuration del dashboard de Supabase, que debe
+     incluir el dominio de la app).
+  4. Hacer clic en el link del correo. Debe terminar en `/dashboard` ya con
+     el plantel y perfil creados (nombre del plantel y nombre completo
+     correctos, tomados del registro original).
+  5. Verificar en el SQL Editor de Supabase (o en el propio `/dashboard`) que
+     se creó exactamente un plantel y un perfil — no duplicados si se hace
+     doble clic en el link de confirmación.
+  6. Al terminar la prueba, desactivar "Confirm email" de nuevo si se quiere
+     volver al comportamiento actual de desarrollo, y limpiar la cuenta de
+     prueba creada (usuario en Authentication → Users, y sus filas en
+     `perfiles`/`planteles`) si no se quiere dejar basura en el proyecto.
 
 ## Próximo paso
 
-Con Identidad/Roles y Alumnos mínimos funcionando, el siguiente paso natural
-es Calificaciones/kardex o Asistencia (dependen de Alumnos), o bien resolver
-la estrategia de testing de aislamiento multi-tenant que sigue pendiente
-desde la fundación de la base de datos.
+Con Identidad/Roles y Alumnos mínimos funcionando, y ya resuelta la
+estrategia de testing de aislamiento multi-tenant, el siguiente paso natural
+es Calificaciones/kardex o Asistencia (ambos dependen de Alumnos), o
+configurar estos tests en CI (GitHub Actions).

@@ -80,16 +80,45 @@ La función `security definer` queda acotada a esa única operación
 ("crear mi primer plantel y perfil"), con sus propias validaciones, en vez
 de otorgar privilegios amplios al proceso de la app.
 
-**Caso borde sin resolver todavía**: si el proyecto de Supabase tiene
-confirmación de email activada (comportamiento por defecto), `auth.signUp`
-no deja sesión activa de inmediato, así que el RPC de alta (que requiere
-`auth.uid()`) no se puede llamar en ese momento. El flujo actual solo
-informa al usuario ("revisa tu correo para confirmar tu cuenta") pero no
-retoma automáticamente la creación del plantel/perfil cuando el usuario
-confirma e inicia sesión después — `/dashboard` detecta este estado
-(sesión válida sin perfil) y muestra un mensaje en vez de fallar o entrar
-en loop de redirects, pero no hay todavía un flujo de "completar
-onboarding". Pendiente de decisión en una sesión futura.
+**Confirmación de email — flujo con y sin sesión inmediata**: si el proyecto
+de Supabase tiene confirmación de email activada, `auth.signUp` no deja
+sesión activa de inmediato, así que el RPC de alta (que requiere
+`auth.uid()`) no se puede llamar en ese momento. Esto se resolvió sin
+duplicar la lógica de alta ni pedir de nuevo `nombre_plantel`/`nombre_completo`
+al usuario:
+
+1. `src/app/registro/acciones.ts` llama `auth.signUp` guardando
+   `nombre_plantel`/`nombre_completo` como *user metadata* de Supabase Auth
+   (`options.data`) y pasando `options.emailRedirectTo` apuntando a
+   `/auth/callback`. Esa metadata sigue disponible aunque pasen días entre el
+   registro y el clic en el correo de confirmación.
+2. Si `signUp` ya devuelve sesión (confirmación desactivada, como en el
+   proyecto de desarrollo actual), el flujo sigue exactamente igual que
+   antes: se llama `registrar-plantel-inicial` de inmediato y se redirige a
+   `/dashboard`. Este camino no cambió.
+3. Si no hay sesión inmediata (confirmación activada), se informa al usuario
+   ("revisa tu correo") y el alta se completa después en
+   `src/app/auth/callback/route.ts` — un Route Handler (no una page, porque
+   no hay UI que mostrar, solo un efecto secundario y una redirección) al que
+   Supabase manda al usuario tras hacer clic en el link del correo, con un
+   `code` en la query string. El handler: intercambia el `code` por sesión
+   (`exchangeCodeForSession`, cliente de servidor); revisa con
+   `obtener-perfil-actual` si el usuario ya tiene perfil (protege contra
+   doble clic en el link); si no lo tiene, lee `nombre_plantel`/
+   `nombre_completo` de `user.user_metadata` y llama al mismo
+   `registrar-plantel-inicial` que usa `/registro` (sin duplicar lógica); y
+   redirige a `/dashboard`. Cualquier falla (código inválido/expirado,
+   metadata faltante, error del RPC) redirige a `/login?error=...` con un
+   mensaje legible, que `/login` muestra si el parámetro está presente.
+4. `/dashboard` conserva el mensaje de "tu cuenta no tiene plantel" como red
+   de seguridad (ver comentario en `src/app/dashboard/page.tsx`), pero ya no
+   es el camino principal para completar el alta cuando la confirmación está
+   activada — `/auth/callback` la completa antes de que el usuario llegue ahí.
+
+Nota operativa: en el proyecto de Supabase de **desarrollo**, "Confirm
+email" sigue **desactivado** por decisión explícita del usuario (no técnica)
+— ver entrada correspondiente en `memory/CONTEXT.md` para los pasos de
+verificación manual pendientes de correr el día que se active.
 
 **Sesión SSR**: `src/lib/supabase/client.ts` (browser, `createBrowserClient`
 de `@supabase/ssr`), `src/lib/supabase/server.ts` (Server
@@ -185,15 +214,35 @@ RLS habilitada. Tres políticas:
   política se dejó lista porque no tiene costo adicional definirla junto
   con la tabla.
 
-**Deuda técnica marcada explícitamente**: esta tabla se creó sin el test
-automático de aislamiento multi-tenant que CLAUDE.md 4.3 exige "desde el
-primer commit que toque una tabla nueva" — la estrategia de testing sigue
-sin resolverse (mismo pendiente que la fundación multi-tenant, ver
-ADR-0001). Ver `memory/CONTEXT.md` para el registro de esta deuda.
+**Deuda técnica resuelta (2026-08-22)**: esta tabla se creó inicialmente sin
+el test automático de aislamiento multi-tenant que CLAUDE.md 4.3 exige. Ya
+está cubierta, junto con `planteles`/`perfiles`, por
+`tests/aislamiento-multitenant.test.ts` — ver sección "Decisiones técnicas"
+más abajo y la adenda de ADR-0001.
 
 ## Decisiones técnicas
 
-_Pendiente — decisiones relevantes se documentan como ADR en `/docs/adr/`._
+### Testing de aislamiento multi-tenant (RLS)
+
+CLAUDE.md 4.3 exige tests automáticos de aislamiento multi-tenant "desde el
+primer commit que toque una tabla nueva", corriendo contra el SDK cliente
+(nunca el SQL Editor de Supabase, que bypasea RLS). En vez de Supabase CLI
+local con Docker (contradice el principio de "evitar Docker" del stack para
+un equipo de una persona — sección 6 de CLAUDE.md), los tests corren con
+**Vitest + `@supabase/supabase-js` contra el proyecto Supabase remoto de
+desarrollo real**, usando dos cuentas de prueba fijas y reutilizables (no
+efímeras, para no requerir `service_role`).
+
+Detalle completo de la decisión y el trade-off aceptado (esas cuentas y sus
+datos viven permanentemente en el proyecto de desarrollo) en la
+[adenda de ADR-0001](adr/0001-validacion-arquitectura-inicial.md#adenda-2026-08-22-estrategia-de-testing-de-aislamiento-rls).
+
+**Cómo correr los tests**: `npm test` (requiere `.env.local` con
+`NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` del proyecto de
+desarrollo). Archivos: `tests/aislamiento-multitenant.test.ts` (casos),
+`tests/helpers/cuenta-prueba.ts` (helper idempotente de alta/login de
+cuentas de prueba), `vitest.config.mts` + `tests/setup.ts` (carga de env y
+polyfill de `WebSocket`, requerido por `@supabase/supabase-js` en Node 20).
 
 ## Diagrama de capas
 
