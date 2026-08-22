@@ -210,10 +210,53 @@ primer cliente real tenga un solo plantel.
   ese archivo). `npm run build` y `npm run lint` sí pasan completos sin
   aplicar nada, porque no dependen de la tabla en build time.
 
+- 2026-08-22: Se implementó el módulo Comunicación mínimo (cierra el ciclo
+  completo de valor de la Oleada 1 del MVP, CLAUDE.md sección 3): tablón de
+  avisos **interno (in-app)**, de solo alta y lectura — explícitamente NO
+  envío real de correo/SMS a padres/tutores en este corte. Razón: no existen
+  todavía datos de contacto de tutores (bloqueados por CLAUDE.md 4.4, cifrado
+  en reposo no resuelto) ni una integración real de proveedor de email —
+  construir una interfaz `IEmailSender` hoy sería la ceremonia sin sustancia
+  que CLAUDE.md 4.1 dice evitar. Migración nueva
+  `supabase/migrations/20260822191115_avisos_tablon.sql` con la tabla
+  `avisos`, RLS habilitada, e índice en `plantel_id` — **pendiente de aplicar
+  manualmente en el SQL Editor de Supabase**, igual que las migraciones
+  anteriores. Casos de uso en `src/modules/comunicacion/casos-uso/`
+  (`publicar-aviso`, `listar-avisos`), CRUD simple sin capa de dominio puro
+  separada (a diferencia de Calificaciones/Asistencia) — no hay lógica de
+  negocio no trivial en este alcance. UI en `/avisos` (listado) y
+  `/avisos/nuevo` (alta), con enlace "Avisos" agregado a la navegación
+  mínima existente en `/alumnos`. Test de aislamiento multi-tenant en el
+  mismo commit que la tabla nueva (`tests/aislamiento-avisos.test.ts`), como
+  exige CLAUDE.md 4.3. Detalle completo en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#comunicación).
+
+  **Pendiente antes de que `npm test` pase en verde completo** (mismo patrón
+  que quedó documentado al implementar Calificaciones/Asistencia): aplicar la
+  migración nueva en el proyecto de Supabase de desarrollo — sin ella,
+  `tests/aislamiento-avisos.test.ts` falla con "Could not find the table
+  'public.avisos'" (el resto de la suite sigue en verde: 30 tests pasan, 3 se
+  saltan por ese archivo). `npm run build` y `npm run lint` sí pasan
+  completos sin aplicar nada.
+
+  **Pendiente explícito, NO resuelto en esta sesión**: "portales por rol"
+  (último ítem de la Oleada 1, CLAUDE.md sección 3) sigue sin implementar.
+  Depende de un caso de uso que todavía no existe — **invitar/dar de alta
+  usuarios adicionales (docente, alumno, administrativo) a un plantel ya
+  existente**. Hoy Identidad/Roles solo soporta crear el primer usuario
+  (`oficina_central`) de un plantel nuevo vía `/registro`
+  (`registrar-plantel-inicial`); no hay ningún flujo para que ese primer
+  usuario invite a un docente o dé de alta una cuenta de alumno dentro de su
+  mismo plantel. Es la sesión natural siguiente antes de poder construir
+  portales diferenciados por rol (el campo `dirigido_a` de `avisos` es
+  informativo por ahora, no filtra visibilidad por rol, precisamente por
+  este hueco).
+
 ## Próximo paso
 
-Con Identidad/Roles, Alumnos, Calificaciones/Kardex y Asistencia mínimos
-funcionando, el siguiente paso natural es Comunicación (cierra el ciclo
-completo de valor de la Oleada 1 del MVP, CLAUDE.md sección 3), o configurar
-los tests de aislamiento en CI (GitHub Actions) — pendiente no bloqueante
-desde sesiones anteriores.
+Con Identidad/Roles, Alumnos, Calificaciones/Kardex, Asistencia y
+Comunicación mínimos funcionando, la Oleada 1 del MVP está completa excepto
+por "portales por rol" (ver pendiente explícito arriba: requiere primero un
+caso de uso de invitar/dar de alta usuarios adicionales a un plantel
+existente). Otras tareas no bloqueantes pendientes de sesiones anteriores:
+configurar los tests de aislamiento en CI (GitHub Actions).

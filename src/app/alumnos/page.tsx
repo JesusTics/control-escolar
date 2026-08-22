@@ -51,6 +51,12 @@ export default async function PaginaAlumnos() {
           >
             Asistencia
           </Link>
+          <Link
+            href="/avisos"
+            className="flex h-14 flex-1 items-center justify-center rounded-lg border border-zinc-300 text-lg font-semibold text-zinc-900 transition-colors hover:bg-zinc-100"
+          >
+            Avisos
+          </Link>
         </div>
 
         {alumnos.length === 0 ? (

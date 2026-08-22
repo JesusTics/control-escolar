@@ -152,6 +152,79 @@ flujo de alta de usuarios con ese rol):
 (`2026-01-15`) para que la corrida sea idempotente entre ejecuciones (el
 upsert por `alumno_id,fecha` no duplica filas).
 
+### Comunicación
+
+Alcance actual (mínimo): **tablón de avisos interno (in-app)**, de solo alta
+y lectura — no envío real de correo/SMS a padres/tutores. Es una decisión de
+alcance explícita, no una simplificación temporal sin razón:
+
+- No existen todavía datos de contacto de tutores en el sistema (bloqueados
+  por CLAUDE.md 4.4 — cifrado en reposo para datos de contacto de tutores no
+  está implementado), así que no hay a quién enviar un correo/SMS real
+  todavía.
+- Construir una interfaz `IEmailSender` hoy, sin una implementación real de
+  proveedor detrás, sería exactamente la ceremonia que CLAUDE.md 4.1 dice
+  evitar ("una interfaz con una sola implementación real no es arquitectura,
+  es ceremonia") — y aquí ni siquiera habría una implementación real, solo un
+  mock. Cuando exista un proveedor de email real que integrar, ahí sí aplica
+  el criterio de CLAUDE.md 4.1 de "integración con un proveedor externo real"
+  y se justifica la interfaz.
+- Sin edición ni borrado de avisos — más simple y consistente con "sin
+  sobreingeniería para el MVP" (CLAUDE.md 4.1). Si un aviso tiene un error,
+  por ahora se publica uno nuevo corrigiéndolo.
+- Sin portales diferenciados por rol todavía (el campo `dirigido_a` es
+  informativo, no filtra quién puede ver el aviso) — depende de que existan
+  cuentas de docente/alumno reales, y hoy solo existe el alta inicial de
+  `oficina_central` vía registro (ver huecos conocidos de Identidad/Roles más
+  abajo y la entrada correspondiente en `memory/CONTEXT.md`).
+
+**Casos de uso** (`src/modules/comunicacion/casos-uso/`): `publicar-aviso`,
+`listar-avisos`. Mismo patrón de cliente de Supabase inyectado que el resto
+de módulos. Se trata como CRUD simple (sin capa de dominio puro separada,
+a diferencia de Calificaciones/Asistencia) — no hay lógica de negocio no
+trivial en este alcance (alta con dos campos obligatorios y un listado
+ordenado), solo el patrón de resolver `plantel_id`/`autor_id` desde la
+sesión actual en vez de confiar en el formulario, igual que en los demás
+módulos.
+
+`publicar-aviso` toma `autor_id` de `auth.getUser()` (el usuario autenticado
+actual), nunca de un valor de formulario — mismo criterio que `plantel_id`
+en Alumnos/Calificaciones/Asistencia. `listar-avisos` trae el nombre del
+autor vía `select` anidado (`autor:perfiles(nombre_completo)`), mismo patrón
+que el nombre de materia en el kardex de Calificaciones.
+
+**Tabla `public.avisos`**, definida en
+`supabase/migrations/20260822191115_avisos_tablon.sql`.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_avisos_plantel_id`) |
+| `autor_id` | `uuid` | `not null`, referencia `perfiles(id)` |
+| `titulo` | `text` | Obligatorio |
+| `contenido` | `text` | Obligatorio |
+| `dirigido_a` | `text` | `not null`, default `'todos'`, `check` restringido a `todos`/`docentes`/`alumnos` |
+| `created_at` | `timestamptz` | Default `now()` |
+
+RLS habilitada. Dos políticas (sin `UPDATE`/`DELETE` — no hay caso de uso de
+edición/borrado en este alcance):
+
+- `avisos_select_mismo_plantel`: cualquier usuario autenticado del plantel
+  puede ver los avisos de su plantel.
+- `avisos_insert_staff_mismo_plantel`: exige `plantel_id =
+  plantel_id_actual()`, `autor_id = auth.uid()` (nadie puede publicar un
+  aviso a nombre de otro usuario) y rol `administrativo` u `oficina_central`
+  — a diferencia de `calificaciones`/`asistencias`, no incluye `docente`
+  (publicar avisos institucionales es tarea administrativa en este alcance,
+  no docente).
+
+**Cubierta desde el primer commit** por
+`tests/aislamiento-avisos.test.ts` (CLAUDE.md 4.3) — ver/no-ver aviso ajeno,
+spoofing de `plantel_id` rechazado por RLS. Sin restricción `unique` en la
+tabla (a diferencia de `alumnos`/`materias`), así que la idempotencia del
+test se logra buscando por título fijo antes de insertar, en vez de confiar
+en un conflicto de unicidad.
+
 ### Identidad/Roles
 
 Alcance actual (mínimo): login con email + contraseña, alta del primer
