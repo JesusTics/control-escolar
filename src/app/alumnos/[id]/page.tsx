@@ -3,6 +3,7 @@ import Link from "next/link";
 import { crearClienteServidor } from "@/lib/supabase/server";
 import { obtenerKardexAlumno } from "@/modules/calificaciones/casos-uso/obtener-kardex-alumno";
 import { obtenerAsistenciaAlumno } from "@/modules/asistencia/casos-uso/obtener-asistencia-alumno";
+import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
 import { VistaKardexAlumno } from "./vista-kardex";
 
 export default async function PaginaKardexAlumno({
@@ -21,7 +22,16 @@ export default async function PaginaKardexAlumno({
     redirect("/login");
   }
 
-  const resultado = await obtenerKardexAlumno(supabase, id);
+  // El rol determina si el kardex trae los datos sensibles descifrados (ver
+  // comentario en obtener-kardex-alumno.ts) — se resuelve aquí, no en el
+  // caso de uso, para no acoplarlo a Identidad más de lo necesario.
+  const resultadoPerfil = await obtenerPerfilActual(supabase);
+  if (!resultadoPerfil.exito) {
+    throw new Error(resultadoPerfil.error);
+  }
+  const rolActual = resultadoPerfil.perfil?.rol;
+
+  const resultado = await obtenerKardexAlumno(supabase, id, rolActual);
 
   if (!resultado.exito) {
     throw new Error(resultado.error);

@@ -108,6 +108,59 @@ credenciales de un proyecto Supabase específico, correrlos en GitHub Actions
 diseño — son públicas en el bundle del cliente) como secretos del repo. Queda
 como tarea de la configuración de CI, no bloquea esta decisión de diseño.
 
+## Adenda (2026-08-22): cifrado de campos sensibles en capa de aplicación
+
+CLAUDE.md 4.4 dejó pendiente, desde la plática de planeación inicial,
+"cifrado en reposo para campos sensibles (datos médicos, tutores) más allá
+de lo que da por default la infraestructura" — sin resolver el "cómo".
+Postgres/Supabase ya cifra en reposo a nivel de disco por default; lo que
+faltaba era cifrado a nivel de columna, para que ni un dump de la base ni
+acceso directo al dashboard de Supabase (SQL Editor) permitieran leer estos
+campos en claro.
+
+**Alternativas consideradas**:
+
+1. **`pgcrypto`/`pgsodium` (extensiones de Postgres)**: cifrar/descifrar
+   dentro de la propia base, con funciones SQL (`pgp_sym_encrypt`, etc.).
+2. **Supabase Vault**: gestión de secretos de Supabase sobre `pgsodium`,
+   pensada justo para este caso de uso.
+3. **Cifrado en la capa de aplicación** (Node, módulo `crypto` nativo, fuera
+   de Postgres por completo).
+
+**Decisión**: cifrado en la capa de aplicación (opción 3), con AES-256-GCM
+vía el módulo `crypto` nativo de Node — sin librerías de terceros. Detalle
+de implementación en `src/lib/cifrado/` y en
+[ARCHITECTURE.md](../ARCHITECTURE.md#alumnos).
+
+**Por qué no `pgcrypto`/Vault, a pesar de ser la opción "nativa" de
+Postgres/Supabase**: en ambas, la clave de cifrado termina viviendo *dentro*
+de la infraestructura que se supone hay que proteger — como parámetro de la
+función SQL (`pgcrypto`) o como secreto gestionado por el propio proyecto de
+Supabase (Vault). Alguien con acceso de `service_role`/administrador al
+proyecto de Supabase (ej. un empleado del proveedor con acceso al panel
+interno, o una filtración de credenciales de `service_role`) podría
+potencialmente descifrar los datos sin salir de la infraestructura de
+Supabase. Con cifrado en capa de aplicación, la clave (`CIFRADO_CLAVE`) vive
+**exclusivamente** como variable de entorno del proceso de Next.js en
+Vercel — nunca toca Supabase. Comprometer solo la base de datos (el
+escenario más probable: un dump, una query mal restringida, acceso al SQL
+Editor) no es suficiente para leer estos campos; hace falta comprometer
+*además* el entorno de ejecución de la app.
+
+**Costo aceptado de esta decisión**: no se puede filtrar/ordenar por estos
+campos en SQL (son ciphertext, no el dato real) — irrelevante aquí, ninguno
+de los tres campos (contacto de tutor, información médica) necesita
+búsqueda ni orden. Tampoco se puede usarlos en una política RLS directamente
+sobre su contenido — tampoco aplica: la restricción de acceso a estos
+campos específicos es de autorización por rol (`administrativo`/
+`oficina_central` en el caso de uso), no de contenido.
+
+**Por qué AES-256-GCM y no un modo sin autenticación (ej. AES-CBC)**: GCM
+agrega un `authTag` que detecta si el ciphertext fue manipulado antes de
+descifrar — lanza un error explícito en vez de devolver datos corruptos o
+manipulados en silencio. Para datos médicos y de contacto de un menor, esa
+garantía de integridad es tan relevante como la confidencialidad.
+
 ## Fuentes usadas en la validación
 
 - Supabase RLS Best Practices — makerkit.dev

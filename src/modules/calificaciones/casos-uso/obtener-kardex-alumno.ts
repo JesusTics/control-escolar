@@ -8,6 +8,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { calcularPromedio, estaAprobado } from "../dominio/calificacion";
 import type { Alumno } from "@/modules/alumnos/dominio/alumno";
+import { cifrador } from "@/lib/cifrado/instancia";
+import type { Rol } from "@/modules/identidad/dominio/perfil";
 
 export interface CalificacionKardex {
   id: string;
@@ -18,15 +20,40 @@ export interface CalificacionKardex {
   aprobado: boolean;
 }
 
+// Datos sensibles ya descifrados (texto plano), listos para mostrarse en la
+// UI. Un campo individual `null` significa "no capturado" (columna vacía en
+// la base); el objeto completo `datosSensibles` siendo `null` en `Kardex`
+// significa "no autorizado a verlos" — dos cosas distintas, ver más abajo.
+export interface DatosSensiblesAlumno {
+  tutorNombre: string | null;
+  tutorTelefono: string | null;
+  informacionMedica: string | null;
+}
+
 export interface Kardex {
   alumno: Alumno;
   calificaciones: CalificacionKardex[];
   promedioGeneral: number | null;
+  // `null` para cualquier rol que no sea `administrativo`/`oficina_central`
+  // (incluye `docente` y `alumno`, y también cuando el rol no se pudo
+  // determinar) — decisión de autorización a nivel de APLICACIÓN, no de RLS.
+  // RLS (`alumnos_select_propio_o_staff`) ya permite a `docente` ver la fila
+  // completa de `alumnos` (matrícula, nombre, etc.), pero estos tres campos
+  // son más sensibles (contacto de tutor, datos médicos) que el resto del
+  // expediente — el cifrado en sí más esta verificación de rol aquí es la
+  // capa adicional que los protege incluso de quien sí puede ver el resto
+  // del expediente por RLS.
+  datosSensibles: DatosSensiblesAlumno | null;
 }
 
 export type ResultadoKardexAlumno =
   | { exito: true; kardex: Kardex }
   | { exito: false; error: string };
+
+const ROLES_CON_ACCESO_A_DATOS_SENSIBLES: ReadonlySet<Rol> = new Set([
+  "administrativo",
+  "oficina_central",
+]);
 
 interface FilaCalificacionConMateria {
   id: string;
@@ -39,6 +66,7 @@ interface FilaCalificacionConMateria {
 export async function obtenerKardexAlumno(
   supabase: SupabaseClient,
   alumnoId: string,
+  rolActual?: Rol,
 ): Promise<ResultadoKardexAlumno> {
   const { data: alumno, error: errorAlumno } = await supabase
     .from("alumnos")
@@ -79,8 +107,37 @@ export async function obtenerKardexAlumno(
     calificaciones.map((c) => c.calificacion),
   );
 
+  const alumnoTipado = alumno as Alumno;
+
+  let datosSensibles: DatosSensiblesAlumno | null = null;
+  if (rolActual && ROLES_CON_ACCESO_A_DATOS_SENSIBLES.has(rolActual)) {
+    try {
+      datosSensibles = {
+        tutorNombre: alumnoTipado.tutor_nombre_cifrado
+          ? cifrador.descifrar(alumnoTipado.tutor_nombre_cifrado)
+          : null,
+        tutorTelefono: alumnoTipado.tutor_telefono_cifrado
+          ? cifrador.descifrar(alumnoTipado.tutor_telefono_cifrado)
+          : null,
+        informacionMedica: alumnoTipado.informacion_medica_cifrada
+          ? cifrador.descifrar(alumnoTipado.informacion_medica_cifrada)
+          : null,
+      };
+    } catch {
+      return {
+        exito: false,
+        error: "No se pudieron leer los datos sensibles del alumno.",
+      };
+    }
+  }
+
   return {
     exito: true,
-    kardex: { alumno: alumno as Alumno, calificaciones, promedioGeneral },
+    kardex: {
+      alumno: alumnoTipado,
+      calificaciones,
+      promedioGeneral,
+      datosSensibles,
+    },
   };
 }

@@ -19,4 +19,15 @@ export interface Alumno {
   // base de la RLS que restringe a un `alumno` a ver solo su propia fila
   // (ver 20260822200144_endurecer_rls_visibilidad_por_rol.sql).
   perfil_id: string | null;
+  // Datos sensibles (contacto de tutor, información médica) cifrados con
+  // AES-256-GCM en la capa de aplicación (CLAUDE.md 4.4, ver
+  // src/lib/cifrado/). Columnas agregadas en
+  // supabase/migrations/20260822210809_datos_sensibles_alumno.sql —
+  // almacenan el CIPHERTEXT, nunca el dato en claro. Nunca se exponen tal
+  // cual a la UI: se descifran solo en `obtener-kardex-alumno.ts`, y solo si
+  // el rol del perfil actual es `administrativo`/`oficina_central` (ver ese
+  // archivo para el porqué de esta restricción adicional de aplicación).
+  tutor_nombre_cifrado: string | null;
+  tutor_telefono_cifrado: string | null;
+  informacion_medica_cifrada: string | null;
 }

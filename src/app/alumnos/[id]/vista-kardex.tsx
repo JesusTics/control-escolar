@@ -34,6 +34,48 @@ export function VistaKardexAlumno({
         <p className="text-zinc-600">Matrícula: {kardex.alumno.matricula}</p>
       </div>
 
+      {kardex.datosSensibles && (
+        <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-zinc-900">
+              Datos sensibles
+            </h2>
+            <Link
+              href={`/alumnos/${idAlumno}/datos-sensibles`}
+              className="text-sm font-medium text-zinc-900 underline"
+            >
+              Editar datos sensibles
+            </Link>
+          </div>
+          <div className="flex flex-col gap-2 text-sm">
+            <div className="flex flex-col">
+              <span className="font-medium text-zinc-700">
+                Nombre del tutor
+              </span>
+              <span className="text-zinc-900">
+                {kardex.datosSensibles.tutorNombre ?? "No capturado"}
+              </span>
+            </div>
+            <div className="flex flex-col">
+              <span className="font-medium text-zinc-700">
+                Teléfono del tutor
+              </span>
+              <span className="text-zinc-900">
+                {kardex.datosSensibles.tutorTelefono ?? "No capturado"}
+              </span>
+            </div>
+            <div className="flex flex-col">
+              <span className="font-medium text-zinc-700">
+                Información médica
+              </span>
+              <span className="text-zinc-900">
+                {kardex.datosSensibles.informacionMedica ?? "No capturado"}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col items-center gap-1 rounded-lg border border-zinc-200 bg-white px-4 py-6">
         <span className="text-sm font-medium text-zinc-600">
           Promedio general

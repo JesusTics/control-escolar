@@ -401,16 +401,70 @@ primer cliente real tenga un solo plantel.
   vacías que hacen fallar `tests/helpers/cuenta-prueba.ts` en local sin
   `.env.local`.
 
+- 2026-08-22: Se resolvió el mecanismo de cifrado en reposo para campos
+  sensibles (CLAUDE.md 4.4) y se aplicó a un primer conjunto mínimo:
+  contacto de tutor (nombre, teléfono) e información médica del alumno.
+  **Paso parcial hacia LFPDPPP-completo, NO el expediente completo**: siguen
+  explícitamente pendientes y NO se tocaron en esta sesión el aviso de
+  privacidad formal y los derechos ARCO operables como caso de uso real
+  (ambos exigidos por CLAUDE.md 4.4) — quedan como pendientes separados de
+  sesiones futuras.
+
+  Cifrado en la **capa de aplicación** (AES-256-GCM, módulo `crypto` nativo
+  de Node, sin librerías de terceros ni `pgcrypto`/Vault de Supabase) en
+  `src/lib/cifrado/` (`ICifrador`, `CifradorAesGcm`, instancia en
+  `instancia.ts` a partir de la variable de entorno de solo servidor
+  `CIFRADO_CLAVE`). Razonamiento completo (por qué app-layer y no
+  `pgcrypto`/Vault) en la adenda de
+  [ADR-0001](../docs/adr/0001-validacion-arquitectura-inicial.md#adenda-2026-08-22-cifrado-de-campos-sensibles-en-capa-de-aplicación).
+  Migración nueva
+  `supabase/migrations/20260822210809_datos_sensibles_alumno.sql` (tres
+  columnas `text` nullable en `public.alumnos` para el ciphertext) —
+  **pendiente de aplicar manualmente en el SQL Editor de Supabase**, igual
+  que las migraciones anteriores. Sin política RLS nueva (mismas columnas de
+  la tabla `alumnos` ya existente).
+
+  Caso de uso nuevo `actualizar-datos-sensibles-alumno.ts` (los tres campos
+  opcionales de forma independiente, `update` parcial). `obtener-kardex-
+  alumno.ts` extendido para descifrar estos campos **solo si el rol del
+  perfil actual es `administrativo`/`oficina_central`** — para cualquier
+  otro rol (`docente`, `alumno`) vienen `null`/omitidos, aunque RLS sí deje
+  ver el resto de la fila de `alumnos` a `docente`: es una restricción de
+  autorización a nivel de aplicación, capa adicional sobre el cifrado mismo.
+  UI: sección "Datos sensibles" en el kardex (`/alumnos/[id]`, visible solo
+  para staff con acceso) y formulario de edición en
+  `/alumnos/[id]/datos-sensibles`, con verificación de rol en el servidor
+  tanto al renderizar como al procesar el `Server Action`. Detalle completo
+  en [ARCHITECTURE.md](../docs/ARCHITECTURE.md#alumnos).
+
+  Tests nuevos en `tests/dominio/cifrador.test.ts` (unitarios, sin red, con
+  una clave de prueba generada en el propio archivo — no dependen de
+  `CIFRADO_CLAVE` real): ida y vuelta cifrar/descifrar, IV aleatorio (dos
+  cifrados del mismo texto son distintos), manipulación del ciphertext
+  detectada por el `authTag` de GCM, y error claro con clave faltante o de
+  tamaño incorrecto. Confirmado que el suite de aislamiento multi-tenant
+  existente no requiere `CIFRADO_CLAVE` (ningún archivo de esos tests
+  importa, directa o transitivamente, el módulo que instancia el cifrador
+  real) — separación deliberada entre `cifrador-aes-gcm.ts` (solo la clase)
+  e `instancia.ts` (el singleton que sí lee `process.env.CIFRADO_CLAVE`)
+  precisamente para permitir esto.
+
 ## Próximo paso
 
 **Oleada 1 del MVP completa** (CLAUDE.md sección 3): alumnos, kardex/
 calificaciones, asistencia, comunicación y portales por rol, los cinco
-funcionando de punta a punta. Antes de considerar Oleada 2 (cobranza/pagos,
-horarios/carga académica, tickets de soporte), pendientes no bloqueantes de
-sesiones anteriores: activar el CI ya configurado (crear remoto en GitHub,
-push, configurar los dos secrets — ver entrada de arriba); aplicar en el
-proyecto de Supabase de desarrollo las dos migraciones más recientes (ver
-entrada correspondiente arriba) y todas las anteriores todavía no aplicadas
-(revisar `supabase/migrations/` contra el estado real del proyecto, ya son
-10 migraciones acumuladas sin aplicar automáticamente — no hay CLI vinculado
-al proyecto remoto ni token configurado).
+funcionando de punta a punta. Se avanzó además un primer paso de LFPDPPP
+(cifrado en reposo de un conjunto mínimo de campos sensibles, ver entrada
+arriba) — **pendiente explícito, no resuelto todavía**: aviso de privacidad
+formal y derechos ARCO operables (CLAUDE.md 4.4), y el expediente completo
+de alumno más allá de estos tres campos. Antes de considerar Oleada 2
+(cobranza/pagos, horarios/carga académica, tickets de soporte), pendientes
+no bloqueantes de sesiones anteriores: activar el CI ya configurado (crear
+remoto en GitHub, push, configurar los dos secrets — ver entrada
+correspondiente arriba); aplicar en el proyecto de Supabase de desarrollo
+todas las migraciones todavía no aplicadas, incluida la más reciente de
+datos sensibles (revisar `supabase/migrations/` contra el estado real del
+proyecto, ya son 11 migraciones acumuladas sin aplicar automáticamente — no
+hay CLI vinculado al proyecto remoto ni token configurado); y definir
+`CIFRADO_CLAVE` en el `.env.local` de cada entorno (nunca compartir la misma
+clave entre desarrollo y producción).

@@ -14,9 +14,12 @@ adaptadores concretos._
 
 Alcance actual (mínimo): alta e inscripción de un alumno y listado de
 alumnos del plantel del usuario actual. Explícitamente fuera de este
-alcance (sesión futura): expediente completo, edición, baja, y cualquier
-dato sensible (médico, tutores) — este último requiere resolver primero
-cifrado en reposo (CLAUDE.md 4.4), que no está implementado todavía.
+alcance (sesión futura): expediente completo, edición, baja. Un primer
+conjunto mínimo de datos sensibles (contacto de tutor, información médica)
+**ya se implementó** (ver "Datos sensibles cifrados" más abajo) — el
+bloqueador que era resolver cifrado en reposo (CLAUDE.md 4.4) para esos
+campos específicos quedó resuelto; el expediente completo y aviso de
+privacidad/derechos ARCO siguen fuera de alcance.
 
 **Casos de uso** (`src/modules/alumnos/casos-uso/`): `inscribir-alumno`,
 `listar-alumnos`, `listar-alumnos-sin-vincular`, `obtener-alumno-vinculado`.
@@ -33,6 +36,77 @@ el criterio de cuándo aplicar hexagonal.
 del formulario, para no depender de que el cliente envíe un `plantel_id`
 arbitrario — la fuente de verdad del tenant del usuario es siempre su
 perfil, nunca un valor de formulario.
+
+**Datos sensibles cifrados (contacto de tutor, información médica)** —
+primer conjunto mínimo de campos sensibles del expediente, resuelto en esta
+sesión al implementar el mecanismo de cifrado que bloqueaba explícitamente
+este alcance (ver nota de "Alcance actual" arriba). NO es el expediente
+completo: solo tres columnas nuevas en `public.alumnos`
+(`tutor_nombre_cifrado`, `tutor_telefono_cifrado`,
+`informacion_medica_cifrada`), agregadas en
+`supabase/migrations/20260822210809_datos_sensibles_alumno.sql` — pendiente
+de aplicar manualmente en el SQL Editor de Supabase, igual que las
+migraciones anteriores. Tampoco resuelve aviso de privacidad ni derechos
+ARCO operables (CLAUDE.md 4.4) — siguen pendientes, ver `memory/CONTEXT.md`.
+
+**Mecanismo — cifrado en la capa de aplicación, no en Postgres**
+(`src/lib/cifrado/`): AES-256-GCM (autenticado) vía el módulo `crypto`
+nativo de Node, sin librerías de terceros. Interfaz `ICifrador`
+(`src/lib/cifrado/cifrador.ts`) con una única implementación real
+`CifradorAesGcm` (`src/lib/cifrado/cifrador-aes-gcm.ts`) — aplica hexagonal
+ligero aquí de forma explícita (CLAUDE.md 4.1): es una decisión de
+algoritmo/proveedor real, no CRUD trivial. La clave sale de la variable de
+entorno de **solo servidor** `CIFRADO_CLAVE` (nunca `NEXT_PUBLIC_*`, eso la
+metería en el bundle del cliente), 32 bytes en base64 — si falta o tiene el
+tamaño incorrecto, `CifradorAesGcm` falla al construirse con un error claro,
+sin fallback silencioso. Formato del texto cifrado almacenado, documentado en
+el propio código: `base64(IV de 12 bytes | ciphertext | authTag de 16
+bytes)` en un solo string, con un IV aleatorio distinto en cada llamada a
+`cifrar` (no negociable con GCM). **Por qué app-layer y no `pgcrypto`/Vault
+de Supabase**: la clave nunca vive en la base de datos, solo en el proceso
+del servidor — un dump de la base o acceso al dashboard de Supabase no
+alcanza para descifrar nada. Razonamiento completo en la adenda
+correspondiente de
+[ADR-0001](adr/0001-validacion-arquitectura-inicial.md#adenda-2026-08-22-cifrado-de-campos-sensibles-en-capa-de-aplicación).
+
+La instancia lista para usar (`src/lib/cifrado/instancia.ts`, construida una
+sola vez desde `process.env.CIFRADO_CLAVE`, mismo patrón que
+`src/lib/supabase/client.ts`/`server.ts`) vive **separada** de
+`cifrador-aes-gcm.ts` (que solo exporta la clase) a propósito: así
+`tests/dominio/cifrador.test.ts` puede importar la clase y probarla con una
+clave de prueba propia sin que `CIFRADO_CLAVE` sea necesaria para correr
+`npm test`.
+
+**Casos de uso**: `actualizar-datos-sensibles-alumno.ts` recibe los tres
+campos en texto plano, todos opcionales de forma independiente — un campo
+`undefined` no se cifra ni se escribe (`update` parcial), para no forzar a
+capturar los tres a la vez ni pisar un dato ya guardado que no vino en esta
+edición. `obtener-kardex-alumno.ts` (usado por `/alumnos/[id]` y por el
+portal de alumno en `/dashboard`) descifra estos tres campos **solo si el
+rol del perfil actual es `administrativo` u `oficina_central`** — para
+cualquier otro rol (`docente`, `alumno`, o rol indeterminado), `Kardex.
+datosSensibles` viene `null` por completo (no los tres campos individuales
+en `null`, que en cambio significa "no capturado" para quien sí tiene
+acceso). **Es una decisión de autorización a nivel de APLICACIÓN, no de
+RLS**: la política `alumnos_select_propio_o_staff` ya permite a `docente`
+ver la fila completa de `alumnos` (matrícula, nombre, etc., incluidas estas
+columnas cifradas como ciphertext ilegible), pero estos campos son más
+sensibles que el resto del expediente — el cifrado en sí, más esta
+verificación explícita de rol en el caso de uso, es la capa adicional que los
+protege incluso de quien sí puede ver el resto del expediente por RLS. El
+rol se resuelve en `/alumnos/[id]/page.tsx` vía `obtener-perfil-actual` y se
+pasa como tercer parámetro (opcional) a `obtenerKardexAlumno` — el portal de
+alumno en `/dashboard` no lo pasa, así que por defecto (`rolActual`
+`undefined`) tampoco ve estos campos, consistente con la regla.
+
+**UI**: sección "Datos sensibles" en `vista-kardex.tsx` (compartida entre
+`/alumnos/[id]` y el portal de alumno), visible solo cuando
+`kardex.datosSensibles` no es `null` — se muestra "No capturado" por campo
+individual vacío. Enlace "Editar datos sensibles" →
+`/alumnos/[id]/datos-sensibles` (formulario de los tres campos, todos
+opcionales), protegida con el mismo criterio de rol verificado en el
+servidor tanto al renderizar la página como al procesar el `Server Action`
+del submit (`acciones.ts`) — no basta con ocultar el enlace en la UI.
 
 **Vínculo `alumnos.perfil_id`** (columna agregada en
 `supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql`): conecta
@@ -625,8 +699,12 @@ datos sensibles (ver alcance en la sección "Alumnos" de Bounded contexts).
 | `created_at` | `timestamptz` | Default `now()` |
 
 | `perfil_id` | `uuid` | Único, referencia `perfiles(id)`. `null` mientras el alumno no tenga cuenta vinculada. Agregada en `supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql` |
+| `tutor_nombre_cifrado` / `tutor_telefono_cifrado` / `informacion_medica_cifrada` | `text` | Opcionales. Almacenan CIPHERTEXT (AES-256-GCM en capa de aplicación, `src/lib/cifrado/`), nunca el dato en claro. Agregadas en `supabase/migrations/20260822210809_datos_sensibles_alumno.sql` — ver detalle en "Datos sensibles cifrados" arriba |
 
-RLS habilitada. Tres políticas:
+RLS habilitada. Tres políticas (sin política nueva para las columnas de
+datos sensibles — heredan SELECT/UPDATE de las mismas políticas de la tabla;
+la restricción de que solo `administrativo`/`oficina_central` las lean en
+claro es de aplicación, no de RLS, ver "Datos sensibles cifrados" arriba):
 
 - `alumnos_select_propio_o_staff` (reemplaza a `alumnos_select_mismo_plantel`
   desde `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`,
