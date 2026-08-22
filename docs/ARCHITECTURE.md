@@ -735,6 +735,15 @@ Detalle completo de la decisión y el trade-off aceptado (esas cuentas y sus
 datos viven permanentemente en el proyecto de desarrollo) en la
 [adenda de ADR-0001](adr/0001-validacion-arquitectura-inicial.md#adenda-2026-08-22-estrategia-de-testing-de-aislamiento-rls).
 
+**CI (GitHub Actions) — resuelto (2026-08-22)**: `.github/workflows/ci.yml`
+corre `npm ci`, `npm run lint`, `npm run build` y `npm test` en cada
+push/PR a `main`. Las credenciales `anon` que requiere `npm test` ya se
+exponen como secrets del repo (`NEXT_PUBLIC_SUPABASE_URL`/
+`NEXT_PUBLIC_SUPABASE_ANON_KEY`), como quedó pendiente en la adenda de
+ADR-0001 arriba enlazada. Detalle de configuración en
+[SETUP.md](SETUP.md#ci-github-actions). Inactivo hasta que exista un remoto
+en GitHub — ver `memory/CONTEXT.md`.
+
 **Cómo correr los tests**: `npm test` (requiere `.env.local` con
 `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` del proyecto de
 desarrollo). Archivos: `tests/aislamiento-multitenant.test.ts` (planteles,

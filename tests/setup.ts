@@ -5,6 +5,15 @@ import { config } from "dotenv";
 import { resolve } from "node:path";
 import WebSocket from "ws";
 
+// Funciona igual en local y en CI (GitHub Actions) sin lógica condicional:
+// `dotenv.config()` nunca sobreescribe una variable que ya exista en
+// `process.env` (comportamiento default de la librería, sin `override`).
+// En local no hay `NEXT_PUBLIC_SUPABASE_URL`/`ANON_KEY` en el proceso
+// todavía, así que se toman de `.env.local`. En CI no existe `.env.local`
+// (nunca se commitea, ver .gitignore) — `config()` falla en silencio (ENOENT)
+// y las variables ya están pobladas por el job de GitHub Actions
+// (`.github/workflows/ci.yml`, desde `secrets.*`) antes de que este archivo
+// corra.
 config({ path: resolve(process.cwd(), ".env.local"), quiet: true });
 
 // `@supabase/supabase-js` instancia un `RealtimeClient` en el constructor de

@@ -371,15 +371,46 @@ primer cliente real tenga un solo plantel.
   sigue en verde). `npm run build` y `npm run lint` sí pasan completos sin
   aplicar nada.
 
+- 2026-08-22: Se configuró CI (GitHub Actions), pendiente registrado desde
+  varias entradas anteriores y explícito en CLAUDE.md sección 5. Nuevo
+  `.github/workflows/ci.yml`: corre en cada `push`/`pull_request` a `main`,
+  un solo job en `ubuntu-latest` con Node 20 (misma versión que desarrollo
+  local, `package.json` no define `engines`), `npm ci` + `npm run lint` +
+  `npm run build` + `npm test`, con cache de npm en `setup-node`. Se agregó
+  un comentario a `tests/setup.ts` documentando (sin cambiar lógica —
+  `dotenv.config()` ya no sobreescribe variables de `process.env`
+  existentes por default) que el mismo archivo funciona igual en local
+  (lee `.env.local`) y en CI (usa las variables que el job ya puebla desde
+  secrets, `.env.local` no existe ahí). Verificado localmente antes de dar
+  por bueno el workflow, mismos comandos exactos: `npm run lint` limpio,
+  `npm run build` exitoso, `npm test` con 45/45 tests en verde (8 archivos).
+  Documentación actualizada: `docs/SETUP.md` (sección "Despliegue → CI",
+  con los nombres exactos de los dos secrets a configurar) y
+  `docs/ARCHITECTURE.md` (sección "Decisiones técnicas", confirma resuelto
+  el pendiente de exponer credenciales `anon` como secrets, que quedaba
+  abierto en la adenda de ADR-0001).
+
+  **Estado: CI listo en el repo pero INACTIVO.** No hay remoto de GitHub
+  configurado todavía (`git remote -v` vacío) — el workflow no se ejecutará
+  hasta que el usuario, por su cuenta: (a) cree el repositorio remoto en
+  GitHub y haga push de la rama `main`; (b) configure en
+  **Settings → Secrets and variables → Actions** del repo dos secrets con
+  los mismos valores que ya tiene en su `.env.local` local:
+  `NEXT_PUBLIC_SUPABASE_URL` y `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Sin (b), el
+  job de CI fallará en el paso `npm test` con las mismas credenciales
+  vacías que hacen fallar `tests/helpers/cuenta-prueba.ts` en local sin
+  `.env.local`.
+
 ## Próximo paso
 
 **Oleada 1 del MVP completa** (CLAUDE.md sección 3): alumnos, kardex/
 calificaciones, asistencia, comunicación y portales por rol, los cinco
 funcionando de punta a punta. Antes de considerar Oleada 2 (cobranza/pagos,
 horarios/carga académica, tickets de soporte), pendientes no bloqueantes de
-sesiones anteriores: configurar los tests de aislamiento en CI (GitHub
-Actions); aplicar en el proyecto de Supabase de desarrollo las dos
-migraciones más recientes (ver entrada de arriba) y todas las anteriores
-todavía no aplicadas (revisar `supabase/migrations/` contra el estado real
-del proyecto, ya son 10 migraciones acumuladas sin aplicar automáticamente —
-no hay CLI vinculado al proyecto remoto ni token configurado).
+sesiones anteriores: activar el CI ya configurado (crear remoto en GitHub,
+push, configurar los dos secrets — ver entrada de arriba); aplicar en el
+proyecto de Supabase de desarrollo las dos migraciones más recientes (ver
+entrada correspondiente arriba) y todas las anteriores todavía no aplicadas
+(revisar `supabase/migrations/` contra el estado real del proyecto, ya son
+10 migraciones acumuladas sin aplicar automáticamente — no hay CLI vinculado
+al proyecto remoto ni token configurado).
