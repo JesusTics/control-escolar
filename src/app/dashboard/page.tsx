@@ -23,11 +23,13 @@ export default async function PaginaDashboard() {
 
   const { perfil } = resultado;
 
-  // Caso borde: el usuario tiene sesión (ya confirmó su correo) pero nunca
-  // se le creó plantel/perfil porque el registro se detuvo en el paso de
-  // "revisa tu correo" (ver src/app/registro/acciones.ts). Todavía no hay
-  // un flujo para retomar el onboarding en este punto — se avisa en vez de
-  // fallar o entrar en un loop de redirects.
+  // Red de seguridad, no el camino principal: cuando la confirmación de
+  // email está activada, `/auth/callback` (ver
+  // src/app/auth/callback/route.ts) ya se encarga de crear el plantel/perfil
+  // en cuanto el usuario confirma, y redirige aquí solo cuando ya existe. Si
+  // de todas formas se llega a `/dashboard` con sesión pero sin perfil (ej.
+  // alguien borra el perfil manualmente, o llega por una vía que se saltó el
+  // callback), se avisa en vez de fallar o entrar en un loop de redirects.
   if (!perfil) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 bg-zinc-50 px-6 py-16 text-center">
