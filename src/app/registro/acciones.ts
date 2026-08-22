@@ -18,9 +18,21 @@ export async function registrarseAction(
   const nombreCompleto = String(formData.get("nombreCompleto") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
+  // Checkbox obligatorio del aviso de privacidad (LFPDPPP, CLAUDE.md 4.4).
+  // No basta con `required` en el `<input>` del cliente — se vuelve a
+  // validar aquí en el servidor, mismo criterio que el resto de validaciones
+  // de este formulario, por si el checkbox se saltó (ej. request directo sin
+  // pasar por la UI).
+  const aceptaAvisoPrivacidad = formData.get("aceptaAvisoPrivacidad") === "on";
 
   if (!nombrePlantel || !nombreCompleto || !email || !password) {
     return { error: "Completa todos los campos." };
+  }
+
+  if (!aceptaAvisoPrivacidad) {
+    return {
+      error: "Debes aceptar el aviso de privacidad para crear tu cuenta.",
+    };
   }
 
   const supabase = await crearClienteServidor();

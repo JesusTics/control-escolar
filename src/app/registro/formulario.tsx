@@ -90,6 +90,29 @@ export function FormularioRegistro() {
           className="h-12 rounded-lg border border-zinc-300 px-4 text-base"
         />
       </div>
+      <div className="flex items-start gap-2">
+        <input
+          id="aceptaAvisoPrivacidad"
+          name="aceptaAvisoPrivacidad"
+          type="checkbox"
+          required
+          className="mt-1 h-5 w-5 rounded border-zinc-300"
+        />
+        <label
+          htmlFor="aceptaAvisoPrivacidad"
+          className="text-sm text-zinc-700"
+        >
+          He leído y acepto el{" "}
+          <Link
+            href="/aviso-privacidad"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-zinc-900 underline"
+          >
+            aviso de privacidad
+          </Link>
+        </label>
+      </div>
       {estado.error && (
         <p className="text-sm font-medium text-red-600" role="alert">
           {estado.error}
@@ -106,6 +129,11 @@ export function FormularioRegistro() {
         ¿Ya tienes cuenta?{" "}
         <Link href="/login" className="font-medium text-zinc-900 underline">
           Inicia sesión
+        </Link>
+      </p>
+      <p className="text-center text-xs text-zinc-500">
+        <Link href="/aviso-privacidad" className="underline">
+          Aviso de privacidad
         </Link>
       </p>
     </form>

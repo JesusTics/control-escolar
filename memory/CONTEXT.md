@@ -449,22 +449,129 @@ primer cliente real tenga un solo plantel.
   e `instancia.ts` (el singleton que sí lee `process.env.CIFRADO_CLAVE`)
   precisamente para permitir esto.
 
+- 2026-08-22: Se resolvieron dos arreglos cosméticos diagnosticados
+  previamente, ambos marcados como pendientes en entradas anteriores.
+
+  1. **"Autor desconocido" en avisos**: causa raíz era la política
+     `perfiles_select_propio` (fundación multi-tenant), que solo dejaba a un
+     usuario ver su propia fila en `perfiles` — el join de `listar-avisos.ts`
+     a `perfiles.nombre_completo` fallaba por RLS para cualquiera que no
+     fuera el autor mismo. Migración nueva
+     `supabase/migrations/20260822213647_perfiles_visibles_mismo_plantel.sql`
+     (reemplaza `perfiles_select_propio` por `perfiles_select_mismo_plantel`,
+     acotada a `plantel_id = plantel_id_actual()`) — **pendiente de aplicar
+     manualmente en el SQL Editor de Supabase**, igual que las migraciones
+     anteriores. Consistente con `materias_select_mismo_plantel`: el
+     nombre/rol de un colega del mismo plantel no es dato sensible. Se
+     confirmó que `plantel_id_actual()` (`security definer`) no depende de
+     esta política y sigue funcionando igual. Test nuevo en
+     `tests/aislamiento-alumnos.test.ts` ("visibilidad de perfiles dentro del
+     mismo plantel") confirma que una cuenta puede ver el `nombre_completo`
+     de un colega de su mismo plantel; el aislamiento **entre** planteles ya
+     estaba cubierto por `tests/aislamiento-multitenant.test.ts` y no
+     cambió. Detalle completo en
+     [ARCHITECTURE.md](../docs/ARCHITECTURE.md#public-perfiles).
+
+  2. **Campo de correo editable en `/invitacion/[token]`**: al revisar
+     `src/app/invitacion/[token]/page.tsx` y `formulario.tsx` se confirmó que
+     ya estaba implementado correctamente desde el commit original que creó
+     el sistema de invitaciones (`8e97b4c`) — el Server Component ya pasa
+     `email={info.email}` al formulario, y el input usa `value={email}` con
+     `readOnly` (no `disabled`, para que el valor sí se envíe con el
+     submit). No fue necesario ningún cambio de código; el diagnóstico previo
+     ya no reflejaba el estado real del repo.
+
+  **Pendiente de verde completo en `npm test`**: como con toda migración
+  nueva de este proyecto, `tests/aislamiento-alumnos.test.ts` fallará el test
+  nuevo hasta que el usuario aplique
+  `20260822213647_perfiles_visibles_mismo_plantel.sql` manualmente en el
+  proyecto de Supabase de desarrollo — mismo patrón que todas las migraciones
+  anteriores.
+
+- 2026-08-22: Se resolvió el aviso de privacidad formal y los derechos ARCO
+  operables (CLAUDE.md 4.4) — **el último pendiente explícito de
+  cumplimiento LFPDPPP** que quedaba anotado en esta memoria desde la sesión
+  de cifrado de datos sensibles (ver entrada correspondiente arriba). Con
+  esto se completa el paquete mínimo de cumplimiento LFPDPPP exigido por
+  CLAUDE.md 4.4.
+
+  **Aviso de privacidad**: página pública `/aviso-privacidad`
+  (`src/app/aviso-privacidad/page.tsx`, sin sesión requerida) con el
+  contenido legal mínimo — identidad del responsable (nombre del plantel de
+  la sesión actual, o un texto genérico si no hay sesión, con una nota
+  explícita en el código de que cada institución debe completar sus propios
+  datos legales reales antes de producción), finalidades, datos que se
+  recaban, y sección de Derechos ARCO enlazando a `/derechos-arco`. Se acepta
+  **una sola vez, al registrar la cuenta**: checkbox obligatorio nuevo en
+  `/registro` (`src/app/registro/formulario.tsx`), validado tanto en cliente
+  (`required`) como en servidor (`src/app/registro/acciones.ts`) — decisión
+  de alcance explícita: no se repite en cada formulario de captura de datos
+  posterior (inscribir alumno, crear invitación, etc.), documentada en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#identidadroles). Enlace al aviso
+  agregado también al pie de `/login` y `/registro`.
+
+  **Derechos ARCO operables**: tabla nueva `public.solicitudes_arco`
+  (migración `supabase/migrations/20260822214000_solicitudes_arco.sql`, RLS
+  habilitada, índice en `plantel_id`) — **pendiente de aplicar manualmente en
+  el SQL Editor de Supabase**, igual que todas las migraciones anteriores.
+  Es el **canal formal** de la solicitud, no la ejecución automática: una
+  solicitud de "cancelación" no borra ningún dato por sí sola, el staff la
+  atiende manualmente y marca la solicitud como resuelta con una respuesta de
+  texto. Cuatro casos de uso nuevos en `src/modules/identidad/casos-uso/`
+  (`crear-solicitud-arco` — cualquier rol autenticado, sin restricción de rol
+  a diferencia de la mayoría de altas del proyecto —, `listar-mis-
+  solicitudes-arco`, `listar-solicitudes-arco-plantel` — staff, con el nombre
+  del solicitante —, `resolver-solicitud-arco` — staff marca resuelta con
+  respuesta, valida rol explícitamente además de RLS). UI: `/derechos-arco`
+  (protegida, cualquier rol: formulario de alta + lista de solicitudes
+  propias) y `/plantel/solicitudes-arco` (protegida, solo staff: lista del
+  plantel con formulario de respuesta por fila). Enlaces agregados a la
+  navegación: "Derechos ARCO" para todos los roles (incluido el portal de
+  `alumno` en `/dashboard`) y "Solicitudes ARCO" para staff. Detalle completo
+  (incluida la política RLS que permite INSERT a cualquier rol, caso poco
+  común en este proyecto) en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#identidadroles).
+
+  Test de aislamiento multi-tenant en el mismo commit que la tabla nueva
+  (`tests/aislamiento-solicitudes-arco.test.ts`), como exige CLAUDE.md 4.3 —
+  ver/no-ver solicitud ajena, intento de UPDATE bloqueado por RLS (sin
+  efecto, no error, a diferencia del INSERT con `WITH CHECK`), spoofing de
+  `plantel_id` rechazado, y un caso funcional donde la cuenta de prueba A
+  (rol `oficina_central` por ser el alta inicial de su plantel) resuelve su
+  propia solicitud actuando como staff — no fue necesaria una tercera cuenta
+  de prueba dedicada.
+
+  **Pendiente antes de que `npm test` pase en verde completo** (mismo patrón
+  documentado en cada módulo con tabla nueva): aplicar la migración
+  `20260822214000_solicitudes_arco.sql` en el proyecto de Supabase de
+  desarrollo — sin ella, `tests/aislamiento-solicitudes-arco.test.ts` falla
+  con "Could not find the table 'public.solicitudes_arco'" (el resto de la
+  suite de este archivo se salta, no falla). **Nota aparte, no relacionada
+  con esta sesión**: al correr el suite completo se confirmó que
+  `tests/aislamiento-alumnos.test.ts` sigue fallando un test ya documentado
+  como pendiente en una entrada anterior (migración
+  `20260822213647_perfiles_visibles_mismo_plantel.sql` tampoco aplicada
+  todavía) — no se tocó ni se investigó más en esta sesión, es deuda de
+  aplicar migraciones ya conocida, no una regresión nueva. `npm run build` y
+  `npm run lint` sí pasan completos sin aplicar nada.
+
 ## Próximo paso
 
 **Oleada 1 del MVP completa** (CLAUDE.md sección 3): alumnos, kardex/
 calificaciones, asistencia, comunicación y portales por rol, los cinco
-funcionando de punta a punta. Se avanzó además un primer paso de LFPDPPP
-(cifrado en reposo de un conjunto mínimo de campos sensibles, ver entrada
-arriba) — **pendiente explícito, no resuelto todavía**: aviso de privacidad
-formal y derechos ARCO operables (CLAUDE.md 4.4), y el expediente completo
-de alumno más allá de estos tres campos. Antes de considerar Oleada 2
-(cobranza/pagos, horarios/carga académica, tickets de soporte), pendientes
-no bloqueantes de sesiones anteriores: activar el CI ya configurado (crear
-remoto en GitHub, push, configurar los dos secrets — ver entrada
-correspondiente arriba); aplicar en el proyecto de Supabase de desarrollo
-todas las migraciones todavía no aplicadas, incluida la más reciente de
-datos sensibles (revisar `supabase/migrations/` contra el estado real del
-proyecto, ya son 11 migraciones acumuladas sin aplicar automáticamente — no
-hay CLI vinculado al proyecto remoto ni token configurado); y definir
-`CIFRADO_CLAVE` en el `.env.local` de cada entorno (nunca compartir la misma
-clave entre desarrollo y producción).
+funcionando de punta a punta. **Cumplimiento LFPDPPP mínimo también
+completo** (CLAUDE.md 4.4): cifrado en reposo de un primer conjunto de
+campos sensibles, aviso de privacidad formal, y derechos ARCO operables como
+caso de uso real (ver entrada arriba) — ya no quedan pendientes explícitos
+de cumplimiento anotados en esta memoria. Sigue fuera de alcance el
+expediente completo de alumno más allá de los tres campos sensibles ya
+cifrados. Antes de considerar Oleada 2 (cobranza/pagos, horarios/carga
+académica, tickets de soporte), pendientes no bloqueantes de sesiones
+anteriores: activar el CI ya configurado (crear remoto en GitHub, push,
+configurar los dos secrets — ver entrada correspondiente arriba); aplicar en
+el proyecto de Supabase de desarrollo todas las migraciones todavía no
+aplicadas (ya son 13 migraciones acumuladas sin aplicar automáticamente,
+incluidas las dos más recientes de perfiles visibles por plantel y
+solicitudes ARCO — no hay CLI vinculado al proyecto remoto ni token
+configurado); y definir `CIFRADO_CLAVE` en el `.env.local` de cada entorno
+(nunca compartir la misma clave entre desarrollo y producción).

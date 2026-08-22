@@ -29,14 +29,18 @@ const NAV_STAFF: ItemNav[] = [
   { href: "/asistencia", etiqueta: "Asistencia" },
   { href: "/avisos", etiqueta: "Avisos" },
   { href: "/plantel/invitaciones", etiqueta: "Invitar usuarios" },
+  { href: "/plantel/solicitudes-arco", etiqueta: "Solicitudes ARCO" },
+  { href: "/derechos-arco", etiqueta: "Derechos ARCO" },
 ];
 
 // `docente`: sin Materias (solo staff administrativo crea materias) ni
-// Invitar usuarios (solo staff da de alta cuentas).
+// Invitar usuarios/Solicitudes ARCO (solo staff da de alta cuentas y
+// resuelve solicitudes ARCO).
 const NAV_DOCENTE: ItemNav[] = [
   { href: "/alumnos", etiqueta: "Alumnos" },
   { href: "/asistencia", etiqueta: "Asistencia" },
   { href: "/avisos", etiqueta: "Avisos" },
+  { href: "/derechos-arco", etiqueta: "Derechos ARCO" },
 ];
 
 export default async function PaginaDashboard() {
@@ -232,6 +236,13 @@ async function PortalAlumno({
             </div>
           )}
         </div>
+
+        <Link
+          href="/derechos-arco"
+          className="text-center text-sm font-medium text-zinc-900 underline"
+        >
+          Derechos ARCO
+        </Link>
 
         <BotonCerrarSesion />
       </div>

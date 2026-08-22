@@ -628,6 +628,107 @@ deliberadamente visibilidad de TODO el plantel — no existe todavía
 asignación de materias/grupos a un docente específico, resolver eso queda
 fuera de esta sesión.
 
+**Aviso de privacidad y derechos ARCO (LFPDPPP, CLAUDE.md 4.4)** — último
+pendiente explícito de cumplimiento que quedaba registrado en
+`memory/CONTEXT.md` desde la sesión de cifrado de datos sensibles. Dos
+piezas, ambas dentro de este bounded context (el mismo criterio que
+`plantel_id_actual()`/roles: es "quién puede ver/hacer qué con datos
+personales", propio de Identidad):
+
+- **Aviso de privacidad** (`/aviso-privacidad`, página pública, sin sesión
+  requerida): contenido legal mínimo LFPDPPP — identidad del responsable,
+  finalidades, datos que se recaban, y sección de Derechos ARCO con enlace a
+  `/derechos-arco`. La identidad del responsable usa el nombre del plantel de
+  la sesión actual si existe, o un texto genérico ("la institución educativa
+  que opera esta plataforma") si no hay sesión — **no es jurídicamente
+  suficiente por sí solo para producción**, hay una nota explícita en el
+  código (`src/app/aviso-privacidad/page.tsx`) señalando que cada institución
+  debe completar sus propios datos legales reales (razón social, RFC,
+  domicilio, datos del responsable de protección de datos) antes de operar.
+  Se acepta **una sola vez, al registrar la cuenta** (`/registro`, checkbox
+  obligatorio "He leído y acepto el aviso de privacidad", validado tanto en
+  cliente como en el servidor en `src/app/registro/acciones.ts`) — decisión
+  de alcance explícita de esta sesión: no se repite en cada formulario de
+  captura de datos (inscribir alumno, crear invitación, etc.), porque
+  aceptarlo una vez al crear la cuenta ya cubre el requisito legal de
+  consentimiento informado antes de que la cuenta pueda capturar cualquier
+  dato personal en el sistema.
+- **Derechos ARCO operables como caso de uso real** (no solo mencionados en
+  el aviso) — ver "Solicitudes ARCO" más abajo.
+
+**Solicitudes ARCO** — tabla `public.solicitudes_arco`, definida en
+`supabase/migrations/20260822214000_solicitudes_arco.sql`. Es el **canal
+formal** de la solicitud, no la ejecución automática: una solicitud de
+"cancelación" no borra ningún dato por sí sola — el staff la revisa y la
+atiende manualmente (dar de baja un alumno, corregir un dato en su
+expediente, etc., operaciones que ya existen por separado o son manuales) y
+luego marca la solicitud como resuelta con una respuesta de texto. Alcance
+explícito de esta sesión: sin automatización de ninguno de los cuatro tipos.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_solicitudes_arco_plantel_id`) |
+| `solicitante_id` | `uuid` | `not null`, referencia `perfiles(id)` — quién levanta la solicitud |
+| `tipo` | `text` | `not null`, `check` restringido a `acceso`/`rectificacion`/`cancelacion`/`oposicion` |
+| `descripcion` | `text` | `not null` — texto libre de la solicitud |
+| `estado` | `text` | `not null`, default `'pendiente'`, `check` restringido a `pendiente`/`resuelta` |
+| `respuesta` | `text` | Opcional — texto libre del staff al resolver |
+| `atendida_por` | `uuid` | Opcional, referencia `perfiles(id)` — quién la resolvió |
+| `created_at` / `resuelta_en` | `timestamptz` | `resuelta_en` `null` hasta que se resuelve |
+
+RLS habilitada. Tres políticas:
+
+- `solicitudes_arco_select_propia_o_staff`: el solicitante ve su propia
+  solicitud (`solicitante_id = auth.uid()`); staff (`administrativo`/
+  `oficina_central`) del mismo plantel ve todas las del plantel.
+- `solicitudes_arco_insert_propia`: **cualquier rol autenticado** puede
+  insertar una solicitud sobre sí mismo (`solicitante_id = auth.uid()`) —
+  a diferencia de la mayoría de tablas del proyecto, no se restringe por rol
+  el INSERT: los derechos ARCO aplican a todo usuario (alumno, docente,
+  administrativo), no solo a staff.
+- `solicitudes_arco_update_staff`: solo staff del mismo plantel puede
+  actualizar (marcar resuelta) — sin restricción de que sea staff del mismo
+  plantel *que el de la solicitud específica* más allá de `plantel_id_actual()`
+  en el `USING`, mismo patrón que el resto de políticas de `UPDATE` staff del
+  proyecto.
+
+**Casos de uso** (`src/modules/identidad/casos-uso/`): `crear-solicitud-arco`
+(cualquier rol, `descripcion`/`tipo` obligatorios, `solicitante_id`/
+`plantel_id` resueltos desde la sesión actual, nunca del formulario, mismo
+criterio que el resto del proyecto), `listar-mis-solicitudes-arco` (las del
+usuario actual, para que vea el estado de las suyas), `listar-solicitudes-
+arco-plantel` (staff ve todas las del plantel, con el nombre del solicitante
+vía `select` anidado — usa el nombre explícito de la constraint FK,
+`perfiles!solicitudes_arco_solicitante_id_fkey`, porque la tabla tiene DOS
+relaciones con `perfiles` —`solicitante_id` y `atendida_por`— y PostgREST
+necesita desambiguar cuál usar), `resolver-solicitud-arco` (staff marca
+resuelta con una `respuesta`; valida explícitamente el rol de staff del
+usuario actual antes de intentar el UPDATE, aunque RLS también lo bloquea —
+mismo criterio de "mensaje de negocio claro" que `crear-invitacion.ts`).
+
+**UI**: `/derechos-arco` (protegida, cualquier rol autenticado): formulario
+de alta (selector de los 4 tipos + descripción) y, debajo, la lista de
+solicitudes propias con su estado y la respuesta del staff si ya está
+resuelta. `/plantel/solicitudes-arco` (protegida, solo staff, mismo criterio
+de "no tienes permiso" explícito que `/plantel/invitaciones`): lista de
+solicitudes del plantel con un formulario de respuesta por fila
+(`src/app/plantel/solicitudes-arco/formulario.tsx`, un `useActionState` por
+solicitud vía `resolverSolicitudArcoAction.bind(null, solicitudId)` — permite
+que cada fila tenga su propio estado de envío/error sin un formulario global
+con múltiples botones). Enlace "Derechos ARCO" en la navegación de todos los
+roles (incluido el portal de `alumno` en `/dashboard`, que no usa la lista de
+navegación general) y "Solicitudes ARCO" en la navegación de staff.
+
+**Cubierta desde el primer commit** por
+`tests/aislamiento-solicitudes-arco.test.ts` (CLAUDE.md 4.3) — ver/no-ver
+solicitud ajena, intento de UPDATE bloqueado por RLS (sin efecto, no error,
+a diferencia del INSERT con `WITH CHECK`), spoofing de `plantel_id`
+rechazado por RLS, y un caso funcional: la cuenta A (rol `oficina_central`
+por ser el alta inicial de su plantel) resuelve su propia solicitud
+actuando como staff del plantel — no requirió una tercera cuenta de prueba
+dedicada porque la cuenta A ya es staff de su propio plantel.
+
 ## Modelo de datos
 
 Fundación multi-tenant, definida en
@@ -662,8 +763,26 @@ indirectamente, de esta tabla para resolver el tenant del usuario actual.
 | `nombre_completo` | `text` | Obligatorio |
 | `created_at` | `timestamptz` | Default `now()` |
 
-RLS habilitada. Política `perfiles_select_propio`: un usuario solo puede ver
-su propio perfil (`id = auth.uid()`).
+RLS habilitada. Política `perfiles_select_mismo_plantel` (reemplaza a
+`perfiles_select_propio` desde
+`supabase/migrations/20260822213647_perfiles_visibles_mismo_plantel.sql` —
+**pendiente de aplicar manualmente en el SQL Editor de Supabase**, igual que
+las migraciones anteriores): un usuario autenticado ve cualquier perfil de su
+mismo plantel (`plantel_id = plantel_id_actual()`), no solo el propio.
+Corrige el bug cosmético de "Autor desconocido" en avisos —
+`listar-avisos.ts` (ver sección "Comunicación" abajo) hace un join a
+`perfiles.nombre_completo` para mostrar el autor de un aviso, y con la
+política anterior ese join fallaba por RLS para cualquiera que no fuera el
+autor mismo. El nombre/rol de un colega del mismo plantel no se considera
+información sensible (a diferencia de los campos cifrados de `alumnos`,
+protegidos aparte por CLAUDE.md 4.4) — mismo criterio ya usado en
+`materias_select_mismo_plantel`. No afecta el aislamiento **entre**
+planteles (sigue acotado por `plantel_id_actual()`), ni a
+`plantel_id_actual()` misma (`security definer`, corre con privilegios del
+owner de la función, no depende de esta política). Cubierto por un test
+nuevo en `tests/aislamiento-alumnos.test.ts` ("visibilidad de perfiles
+dentro del mismo plantel") — el aislamiento entre planteles ya estaba
+cubierto por `tests/aislamiento-multitenant.test.ts`.
 
 ### Función `public.plantel_id_actual()`
 

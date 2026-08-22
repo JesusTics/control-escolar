@@ -61,6 +61,11 @@ export function FormularioInicioSesion() {
           Crea una aquí
         </Link>
       </p>
+      <p className="text-center text-xs text-zinc-500">
+        <Link href="/aviso-privacidad" className="underline">
+          Aviso de privacidad
+        </Link>
+      </p>
     </form>
   );
 }
