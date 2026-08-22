@@ -2,6 +2,14 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { crearClienteServidor } from "@/lib/supabase/server";
 import { listarAlumnos } from "@/modules/alumnos/casos-uso/listar-alumnos";
+import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
+
+// Mismos roles que exige la política RLS `alumnos_insert_staff_mismo_plantel`
+// (ver supabase/migrations/20260822165852_alumnos_alta_y_listado.sql) — se
+// replica aquí para no mostrar un botón de "Inscribir alumno" que siempre
+// fallaría por RLS para docente/alumno (CLAUDE.md 7: texto explícito, nunca
+// una acción que no se puede completar).
+const ROLES_PUEDEN_INSCRIBIR = ["administrativo", "oficina_central"];
 
 export default async function PaginaAlumnos() {
   const supabase = await crearClienteServidor();
@@ -22,6 +30,16 @@ export default async function PaginaAlumnos() {
 
   const { alumnos } = resultado;
 
+  const resultadoPerfil = await obtenerPerfilActual(supabase);
+
+  if (!resultadoPerfil.exito) {
+    throw new Error(resultadoPerfil.error);
+  }
+
+  const puedeInscribir =
+    !!resultadoPerfil.perfil &&
+    ROLES_PUEDEN_INSCRIBIR.includes(resultadoPerfil.perfil.rol);
+
   return (
     <div className="flex flex-1 flex-col gap-8 bg-zinc-50 px-6 py-16">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-8">
@@ -32,41 +50,17 @@ export default async function PaginaAlumnos() {
           </p>
         </div>
 
-        <div className="flex gap-3">
+        {/* Navegación entre módulos (Materias/Asistencia/Avisos/Invitar
+            usuarios) vive en `/dashboard`, ya filtrada por rol — aquí solo
+            queda la acción propia de esta pantalla. */}
+        {puedeInscribir && (
           <Link
             href="/alumnos/nuevo"
-            className="flex h-14 flex-1 items-center justify-center rounded-lg bg-zinc-900 text-lg font-semibold text-white transition-colors hover:bg-zinc-700"
+            className="flex h-14 w-full items-center justify-center rounded-lg bg-zinc-900 text-lg font-semibold text-white transition-colors hover:bg-zinc-700"
           >
             Inscribir alumno
           </Link>
-          <Link
-            href="/materias"
-            className="flex h-14 flex-1 items-center justify-center rounded-lg border border-zinc-300 text-lg font-semibold text-zinc-900 transition-colors hover:bg-zinc-100"
-          >
-            Materias
-          </Link>
-          <Link
-            href="/asistencia"
-            className="flex h-14 flex-1 items-center justify-center rounded-lg border border-zinc-300 text-lg font-semibold text-zinc-900 transition-colors hover:bg-zinc-100"
-          >
-            Asistencia
-          </Link>
-          <Link
-            href="/avisos"
-            className="flex h-14 flex-1 items-center justify-center rounded-lg border border-zinc-300 text-lg font-semibold text-zinc-900 transition-colors hover:bg-zinc-100"
-          >
-            Avisos
-          </Link>
-          {/* Se agrega siempre; la propia página bloquea con "no tienes
-              permiso" si el rol no es administrativo/oficina_central — mismo
-              criterio que el resto de esta barra de navegación mínima. */}
-          <Link
-            href="/plantel/invitaciones"
-            className="flex h-14 flex-1 items-center justify-center rounded-lg border border-zinc-300 text-lg font-semibold text-zinc-900 transition-colors hover:bg-zinc-100"
-          >
-            Invitar usuarios
-          </Link>
-        </div>
+        )}
 
         {alumnos.length === 0 ? (
           <p className="text-center text-zinc-600">

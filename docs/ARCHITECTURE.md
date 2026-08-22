@@ -19,19 +19,39 @@ dato sensible (médico, tutores) — este último requiere resolver primero
 cifrado en reposo (CLAUDE.md 4.4), que no está implementado todavía.
 
 **Casos de uso** (`src/modules/alumnos/casos-uso/`): `inscribir-alumno`,
-`listar-alumnos`. Mismo patrón que Identidad/Roles: reciben el cliente de
-Supabase ya instanciado como parámetro en vez de crearlo internamente. Se
-aplica hexagonal ligero aquí (no CRUD puro) porque hay lógica de negocio
-real: validación de campos obligatorios y unicidad de matrícula por
-plantel, con traducción del error crudo de Postgres (código `23505`, y
-`42501` cuando RLS rechaza el INSERT por rol) a un mensaje de negocio claro
-— ver ADR-0001 sobre el criterio de cuándo aplicar hexagonal.
+`listar-alumnos`, `listar-alumnos-sin-vincular`, `obtener-alumno-vinculado`.
+Mismo patrón que Identidad/Roles: reciben el cliente de Supabase ya
+instanciado como parámetro en vez de crearlo internamente. Se aplica
+hexagonal ligero aquí (no CRUD puro) porque hay lógica de negocio real:
+validación de campos obligatorios y unicidad de matrícula por plantel, con
+traducción del error crudo de Postgres (código `23505`, y `42501` cuando RLS
+rechaza el INSERT por rol) a un mensaje de negocio claro — ver ADR-0001 sobre
+el criterio de cuándo aplicar hexagonal.
 
 `inscribir-alumno` resuelve el `plantel_id` a partir de
 `obtener-perfil-actual` (reutilizado de Identidad/Roles) en vez de recibirlo
 del formulario, para no depender de que el cliente envíe un `plantel_id`
 arbitrario — la fuente de verdad del tenant del usuario es siempre su
 perfil, nunca un valor de formulario.
+
+**Vínculo `alumnos.perfil_id`** (columna agregada en
+`supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql`): conecta
+un perfil con rol `alumno` con su fila correspondiente de `alumnos` — hasta
+esta sesión eran entidades completamente desconectadas, lo que hacía posible
+tener una cuenta con rol `alumno` sin ningún expediente asociado, y (más
+grave) hacía imposible restringir por RLS qué calificaciones/asistencia
+puede ver un `alumno` (ver "Identidad/Roles" más abajo, sección "Sistema de
+invitaciones", y la política `alumnos_select_propio_o_staff`). Dos casos de
+uso nuevos la usan:
+
+- `listar-alumnos-sin-vincular`: lista los alumnos del plantel con
+  `perfil_id is null` — usado por `/plantel/invitaciones` para ofrecer, al
+  invitar a alguien con rol `alumno`, solo alumnos que de verdad pueden
+  vincularse.
+- `obtener-alumno-vinculado`: dado un `perfilId`, devuelve el alumno cuyo
+  `perfil_id` coincide (o `null` si no hay ninguno todavía) — usado por el
+  portal de alumno en `/dashboard` para resolver directamente SU propio
+  expediente, sin pasar por el listado general.
 
 ### Calificaciones
 
@@ -140,11 +160,17 @@ RLS habilitada. Tres políticas, mismo criterio de roles que
 asistencia es tarea docente en la vida real, aunque hoy no exista todavía un
 flujo de alta de usuarios con ese rol):
 
-- `asistencias_select_mismo_plantel`: cualquier usuario autenticado del
-  plantel puede ver las asistencias de su plantel.
+- `asistencias_select_propio_o_staff` (reemplaza a
+  `asistencias_select_mismo_plantel` desde
+  `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`,
+  mismo criterio exacto que `calificaciones_select_propio_o_staff`):
+  `administrativo`/`oficina_central`/`docente` ven toda la asistencia del
+  plantel (sin cambio); un perfil con rol `alumno` solo ve los registros del
+  alumno vinculado a su propio perfil.
 - `asistencias_insert_staff_mismo_plantel` /
   `asistencias_update_staff_mismo_plantel`: solo `administrativo`,
-  `oficina_central` o `docente` del mismo plantel.
+  `oficina_central` o `docente` del mismo plantel. **Sin cambios** en esta
+  sesión.
 
 **Cubierta desde el primer commit** por `tests/aislamiento-asistencia.test.ts`
 (CLAUDE.md 4.3) — ver/no-ver registro de asistencia ajeno, spoofing de
@@ -172,11 +198,12 @@ alcance explícita, no una simplificación temporal sin razón:
 - Sin edición ni borrado de avisos — más simple y consistente con "sin
   sobreingeniería para el MVP" (CLAUDE.md 4.1). Si un aviso tiene un error,
   por ahora se publica uno nuevo corrigiéndolo.
-- Sin portales diferenciados por rol todavía (el campo `dirigido_a` es
-  informativo, no filtra quién puede ver el aviso) — depende de que existan
-  cuentas de docente/alumno reales, y hoy solo existe el alta inicial de
-  `oficina_central` vía registro (ver huecos conocidos de Identidad/Roles más
-  abajo y la entrada correspondiente en `memory/CONTEXT.md`).
+- **`dirigido_a` pasó de ser informativo a filtrar visibilidad de verdad**
+  (ver política `avisos_select_segun_rol` más abajo,
+  `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`)
+  — con el sistema de invitaciones ya existen cuentas reales de
+  `docente`/`alumno`, así que dejó de tener sentido que ese campo fuera solo
+  decorativo.
 
 **Casos de uso** (`src/modules/comunicacion/casos-uso/`): `publicar-aviso`,
 `listar-avisos`. Mismo patrón de cliente de Supabase inyectado que el resto
@@ -209,14 +236,22 @@ que el nombre de materia en el kardex de Calificaciones.
 RLS habilitada. Dos políticas (sin `UPDATE`/`DELETE` — no hay caso de uso de
 edición/borrado en este alcance):
 
-- `avisos_select_mismo_plantel`: cualquier usuario autenticado del plantel
-  puede ver los avisos de su plantel.
+- `avisos_select_segun_rol` (reemplaza a `avisos_select_mismo_plantel` desde
+  `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`):
+  dentro del plantel, `administrativo`/`oficina_central` ven TODOS los avisos
+  (sin cambio); `docente` ve los avisos con `dirigido_a in ('todos',
+  'docentes')`; `alumno` ve los avisos con `dirigido_a in ('todos',
+  'alumnos')`. Es la única política de SELECT de las cuatro tocadas en esta
+  sesión que también cambia el comportamiento para `docente` (antes veía
+  avisos dirigidos solo a `alumnos`, y viceversa) — decisión consciente: ya
+  no tiene sentido dejar `dirigido_a` como campo decorativo ahora que existen
+  cuentas reales de docente/alumno.
 - `avisos_insert_staff_mismo_plantel`: exige `plantel_id =
   plantel_id_actual()`, `autor_id = auth.uid()` (nadie puede publicar un
   aviso a nombre de otro usuario) y rol `administrativo` u `oficina_central`
   — a diferencia de `calificaciones`/`asistencias`, no incluye `docente`
   (publicar avisos institucionales es tarea administrativa en este alcance,
-  no docente).
+  no docente). **Sin cambios** en esta sesión.
 
 **Cubierta desde el primer commit** por
 `tests/aislamiento-avisos.test.ts` (CLAUDE.md 4.3) — ver/no-ver aviso ajeno,
@@ -230,11 +265,15 @@ en un conflicto de unicidad.
 Alcance actual (mínimo): login con email + contraseña, alta del primer
 plantel + perfil de un usuario nuevo, sesión protegida vía middleware,
 **sistema de invitaciones** para dar de alta usuarios adicionales
-(docente/alumno/administrativo) a un plantel ya existente. Explícitamente
-fuera de este alcance (ver diseño de la sesión de invitaciones):
-portales diferenciados por rol (siguiente sesión), envío real de correo (el
-link de invitación se comparte manualmente, mismo criterio que Comunicación)
-y revocar/reenviar invitaciones (solo alta + aceptación + expiración pasiva).
+(docente/alumno/administrativo) a un plantel ya existente, **vínculo
+alumno-perfil** (una invitación con rol `alumno` puede vincularse a una fila
+existente de `alumnos`) y **portales por rol** (navegación de `/dashboard`
+distinta según `administrativo`/`oficina_central`/`docente`/`alumno`, y RLS
+de SELECT endurecida para que `alumno` solo vea sus propios datos — cierra la
+Oleada 1 completa del MVP, CLAUDE.md sección 3). Explícitamente fuera de este
+alcance: envío real de correo (el link de invitación se comparte
+manualmente, mismo criterio que Comunicación) y revocar/reenviar
+invitaciones (solo alta + aceptación + expiración pasiva).
 
 **Auth**: Supabase Auth con email + contraseña (no magic link) — más
 predecible para el perfil de usuario administrativo/docente no técnico que
@@ -349,6 +388,7 @@ abiertas.
 | `expira_en` | `timestamptz` | `not null`, default `now() + 7 días` |
 | `usada_en` | `timestamptz` | `null` hasta que se acepta la invitación |
 | `created_at` | `timestamptz` | Default `now()` |
+| `alumno_id` | `uuid` | Referencia `alumnos(id)`. Agregada en `supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql` — solo relevante cuando `rol = 'alumno'` (sin `check` que lo obligue: es válido invitar a un `alumno` sin seleccionar a cuál vincular, ver `crear-invitacion` más abajo) |
 
 RLS habilitada. Dos políticas, ambas restringidas a staff
 (`administrativo`/`oficina_central`) del mismo plantel:
@@ -388,18 +428,42 @@ sesión); una invitación vencida o mal enviada simplemente se vuelve a crear.
   inserta el perfil con el `plantel_id`/`rol` de la invitación y marca
   `usada_en = now()`. Otorgada solo a `authenticated` (requiere sesión ya
   creada por `signUp`/`signInWithPassword`, a diferencia del RPC anterior).
+  **Actualizada en
+  `supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql`**: si la
+  invitación trae `alumno_id`, después de insertar el perfil también hace
+  `update alumnos set perfil_id = auth.uid() where id = alumno_id and
+  plantel_id = ... and perfil_id is null` — el `perfil_id is null` en el
+  `where` es defensivo (evita pisar un vínculo ya existente en una carrera
+  entre dos aceptaciones concurrentes de invitaciones al mismo alumno,
+  aunque en la práctica `crear-invitacion` ya filtra alumnos sin vincular al
+  momento de crear la invitación). Todo dentro de la misma transacción que el
+  resto de la función — si algo falla, no queda un perfil sin alumno
+  vinculado a medias.
 
 **Casos de uso**: `crear-invitacion` (valida email/rol, resuelve
 `plantel_id`/`creada_por` desde la sesión actual — nunca del formulario,
 mismo criterio que el resto de módulos; traduce el 42501 de RLS a mensaje de
-negocio); `listar-invitaciones` (trae las invitaciones del plantel y deriva
-el `estado` — `pendiente`/`usada`/`expirada` — a partir de
+negocio; acepta un `alumnoId` opcional — solo relevante cuando `rol ===
+'alumno'` —, y si viene, valida con un `select` propio que el alumno exista
+en el plantel y no tenga ya `perfil_id`, antes de insertarlo en la
+invitación); `listar-invitaciones` (trae las invitaciones del plantel y
+deriva el `estado` — `pendiente`/`usada`/`expirada` — a partir de
 `usada_en`/`expira_en` en el propio caso de uso, no en la UI, para no
 duplicar esa regla); `obtener-info-invitacion` (llama al RPC público, sin
 requerir sesión); `aceptar-invitacion` (orquesta `signUp`, si no hay sesión
 todavía, y luego el RPC `aceptar_invitacion` — la validación de negocio vive
 en la función Postgres, no aquí, mismo patrón que
 `registrar-plantel-inicial`).
+
+**UI de invitación con alumno** (`/plantel/invitaciones`,
+`formulario.tsx`): cuando se selecciona el rol "Alumno" en el `<select>` de
+rol, aparece un segundo `<select>` con los alumnos del plantel sin cuenta
+vinculada (`listar-alumnos-sin-vincular`, ver sección "Alumnos" más arriba)
+— mostrar/ocultar se resuelve con `useState` en el cliente, sin librería
+nueva (CLAUDE.md 7). Si no hay alumnos sin vincular, se muestra un mensaje
+explícito invitando a inscribir alumnos primero y se deshabilita el botón de
+enviar para ese rol — en vez de dejar crear una invitación de alumno "a
+ciegas" cuando sí hay candidatos disponibles.
 
 **Misma limitación conocida de confirmación de email que el alta inicial**:
 si el proyecto de Supabase tuviera activada la confirmación de correo,
@@ -436,6 +500,59 @@ por la cuenta de prueba A y el test verifica que su perfil quede con el
 `plantel_id` de A (no uno nuevo) y el `rol` asignado en la invitación (no
 `oficina_central`). Idempotente entre corridas, mismo criterio que el resto
 del suite.
+
+**Portales por rol** (último ítem de la Oleada 1 del MVP, CLAUDE.md sección
+3 — cierra el ciclo completo de valor). `/dashboard`
+(`src/app/dashboard/page.tsx`) deja de ser idéntico para todos los roles:
+
+- `administrativo`/`oficina_central`: navegación completa — Alumnos,
+  Materias, Asistencia, Avisos, Invitar usuarios.
+- `docente`: Alumnos (para navegar a kardex y registrar
+  calificaciones/asistencia), Asistencia, Avisos — sin Materias (solo staff
+  administrativo crea materias) ni Invitar usuarios (solo staff da de alta
+  cuentas).
+- `alumno`: sin menú de navegación general — la lista genérica de `/alumnos`
+  ya no tiene sentido para este rol (tras endurecer la RLS de SELECT, ver
+  más abajo, sería una lista de un solo elemento, confusa). En vez de eso,
+  `/dashboard` resuelve directamente el alumno vinculado al perfil actual
+  (`obtener-alumno-vinculado`, ver sección "Alumnos") y muestra su kardex +
+  asistencia (componente compartido `VistaKardexAlumno`,
+  `src/app/alumnos/[id]/vista-kardex.tsx` — extraído de `/alumnos/[id]` para
+  no duplicar ese layout entre ambas pantallas, con un flag `puedeGestionar`
+  que oculta los botones de "Registrar calificación"/"Capturar asistencia"
+  en el portal de alumno, porque esas acciones siempre fallarían por RLS
+  para este rol) y sus avisos (`listar-avisos`, ya filtrados por
+  `avisos_select_segun_rol`). Si el perfil todavía no está vinculado a
+  ningún alumno (`obtener-alumno-vinculado` devuelve `null` — ej. la
+  invitación se creó sin seleccionar alumno), se muestra un mensaje
+  explícito ("tu cuenta todavía no está vinculada a un expediente de
+  alumno, contacta a la administración de tu plantel") en vez de fallar o
+  mostrar una página vacía confusa.
+
+`/alumnos` (listado general) también se ajustó: el botón "Inscribir alumno"
+solo se muestra a `administrativo`/`oficina_central` (mismo rol que exige
+`alumnos_insert_staff_mismo_plantel`) — antes se mostraba a cualquier rol y
+fallaba por RLS para `docente`/`alumno`. La barra de navegación entre
+módulos que antes vivía ahí (Materias/Asistencia/Avisos/Invitar usuarios) se
+retiró de esa página — ahora vive únicamente en `/dashboard`, ya filtrada
+por rol, para no duplicar navegación sin filtrar en dos lugares.
+
+**Endurecimiento de RLS de SELECT por rol** — el otro lado de esta sesión,
+acoplado a "portales por rol" porque exponer una UI reducida a `alumno` sin
+restringir también la base de datos hubiera sido solo cosmético (cualquiera
+con las credenciales `anon` podría seguir consultando todo por API directa).
+Migración `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`
+— reemplaza (drop + create) las políticas de SELECT de `alumnos`,
+`calificaciones`, `asistencias` y `avisos`, dejando intactas todas las
+políticas de INSERT/UPDATE (ver detalle de cada política en la sección de su
+módulo, arriba). Antes de esta migración, cualquier cuenta autenticada del
+plantel —incluida una con rol `alumno`, posible desde que existe el sistema
+de invitaciones— veía las calificaciones y asistencia de TODOS los alumnos
+del plantel, no solo las suyas: violaba mínimo privilegio y el principio de
+"interés superior del menor" (CLAUDE.md 4.4). `docente` mantiene
+deliberadamente visibilidad de TODO el plantel — no existe todavía
+asignación de materias/grupos a un docente específico, resolver eso queda
+fuera de esta sesión.
 
 ## Modelo de datos
 
@@ -507,21 +624,28 @@ datos sensibles (ver alcance en la sección "Alumnos" de Bounded contexts).
 | `estado` | `text` | `not null`, default `'activo'`, `check` restringido a `activo`/`inactivo` |
 | `created_at` | `timestamptz` | Default `now()` |
 
+| `perfil_id` | `uuid` | Único, referencia `perfiles(id)`. `null` mientras el alumno no tenga cuenta vinculada. Agregada en `supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql` |
+
 RLS habilitada. Tres políticas:
 
-- `alumnos_select_mismo_plantel`: cualquier usuario autenticado del plantel
-  (`plantel_id = plantel_id_actual()`) puede ver sus alumnos — incluye
-  alumnos y docentes, no solo staff, porque el listado por sí solo no
-  expone datos sensibles.
+- `alumnos_select_propio_o_staff` (reemplaza a `alumnos_select_mismo_plantel`
+  desde `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`,
+  ver detalle y motivo del cambio en la sección "Identidad/Roles" más abajo,
+  bloque "Vínculo `alumnos.perfil_id`"): dentro del plantel
+  (`plantel_id = plantel_id_actual()`), un perfil con rol `administrativo`,
+  `oficina_central` o `docente` sigue viendo TODOS los alumnos del plantel
+  (sin cambio de comportamiento); un perfil con rol `alumno` solo ve la fila
+  cuyo `perfil_id` es el suyo (`perfil_id = auth.uid()`) — antes veía a
+  todos los alumnos del plantel, lo cual violaba mínimo privilegio.
 - `alumnos_insert_staff_mismo_plantel`: solo perfiles con rol
   `administrativo` u `oficina_central` del mismo plantel pueden insertar
   (verificado vía `exists (select 1 from perfiles where id = auth.uid() and
-  rol in (...))`).
+  rol in (...))`) — **sin cambios** en esta sesión.
 - `alumnos_update_staff_mismo_plantel`: misma restricción de rol que el
   INSERT, para futuras ediciones (`USING` y `WITH CHECK` ambos acotados a
   `plantel_id_actual()`). No hay todavía un caso de uso de edición — la
   política se dejó lista porque no tiene costo adicional definirla junto
-  con la tabla.
+  con la tabla. **Sin cambios** en esta sesión.
 
 **Deuda técnica resuelta (2026-08-22)**: esta tabla se creó inicialmente sin
 el test automático de aislamiento multi-tenant que CLAUDE.md 4.3 exige. Ya
@@ -572,8 +696,15 @@ de uso en vez de `insert`.
 
 RLS habilitada. Tres políticas:
 
-- `calificaciones_select_mismo_plantel`: cualquier usuario autenticado del
-  plantel puede ver las calificaciones de su plantel.
+- `calificaciones_select_propio_o_staff` (reemplaza a
+  `calificaciones_select_mismo_plantel` desde
+  `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`):
+  dentro del plantel, `administrativo`/`oficina_central`/`docente` siguen
+  viendo todas las calificaciones del plantel (sin cambio); un perfil con rol
+  `alumno` solo ve las calificaciones cuyo `alumno_id` corresponde al alumno
+  vinculado a su propio perfil (`exists (select 1 from alumnos a where a.id =
+  calificaciones.alumno_id and a.perfil_id = auth.uid())`) — antes veía las
+  calificaciones de TODOS los alumnos del plantel.
 - `calificaciones_insert_staff_mismo_plantel` /
   `calificaciones_update_staff_mismo_plantel`: a diferencia de `alumnos` y
   `materias`, incluyen el rol `docente` además de `administrativo` y
@@ -581,7 +712,7 @@ RLS habilitada. Tres políticas:
   no exista todavía un flujo de alta de usuarios con ese rol. Se deja la
   política lista porque no tiene costo adicional definirla junto con la
   tabla (mismo criterio que la política de `UPDATE` sin uso todavía de
-  `alumnos`).
+  `alumnos`). **Sin cambios** en esta sesión.
 
 **Cubierta desde el primer commit** por
 `tests/aislamiento-calificaciones.test.ts` (CLAUDE.md 4.3) — ver/no-ver
@@ -610,8 +741,19 @@ desarrollo). Archivos: `tests/aislamiento-multitenant.test.ts` (planteles,
 perfiles, alumnos), `tests/aislamiento-calificaciones.test.ts` (materias,
 calificaciones — nuevo archivo en vez de extender el existente, para no
 mezclar los casos de un módulo con los de otro, pero reusando el mismo
-helper), `tests/helpers/cuenta-prueba.ts` (helper idempotente de alta/login
-de cuentas de prueba, reutilizado sin cambios por ambos archivos),
+helper), `tests/aislamiento-asistencia.test.ts`, `tests/aislamiento-avisos.test.ts`,
+`tests/aislamiento-invitaciones.test.ts`, `tests/aislamiento-alumnos.test.ts`
+(aislamiento **dentro** del mismo tenant — a diferencia del resto del suite,
+que verifica aislamiento **entre** tenants, este archivo verifica que una
+cuenta con rol `alumno` no vea las calificaciones/asistencia de otro alumno
+de su propio plantel; cubre también que staff siga viendo todo su plantel
+sin cambios, ver
+supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql),
+`tests/helpers/cuenta-prueba.ts` (helper idempotente de alta/login de
+cuentas de prueba, reutilizado sin cambios por todos los archivos —
+`aislamiento-alumnos.test.ts` no lo extendió: siguió el mismo patrón inline
+de `aislamiento-invitaciones.test.ts` para dar de alta su cuenta adicional
+con rol `alumno`, sin necesidad de tocar el helper compartido),
 `vitest.config.mts` + `tests/setup.ts` (carga de env y polyfill de
 `WebSocket`, requerido por `@supabase/supabase-js` en Node 20).
 
@@ -620,6 +762,9 @@ propio proceso/worker, así que `tests/aislamiento-calificaciones.test.ts` no
 asume que `tests/aislamiento-multitenant.test.ts` ya corrió — dan de alta su
 propio alumno de prueba (`TEST-A-001`) de forma idempotente si todavía no
 existe, en vez de depender de un orden entre archivos.
+`tests/aislamiento-alumnos.test.ts` usa matrículas propias
+(`TEST-A-ALUMNO-VINCULADO`, `TEST-A-002`), distintas de `TEST-A-001`, para no
+interferir con los datos de los demás archivos.
 
 ## Diagrama de capas
 

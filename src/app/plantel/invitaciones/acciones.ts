@@ -18,6 +18,7 @@ export async function crearInvitacionAction(
 ): Promise<EstadoCrearInvitacion> {
   const email = String(formData.get("email") ?? "").trim();
   const rolTexto = String(formData.get("rol") ?? "");
+  const alumnoIdTexto = String(formData.get("alumno_id") ?? "").trim();
 
   if (!ROLES_VALIDOS.includes(rolTexto as RolInvitable)) {
     return { error: "Selecciona un rol válido." };
@@ -27,6 +28,7 @@ export async function crearInvitacionAction(
   const resultado = await crearInvitacion(supabase, {
     email,
     rol: rolTexto as RolInvitable,
+    alumnoId: alumnoIdTexto || undefined,
   });
 
   if (!resultado.exito) {

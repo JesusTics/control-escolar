@@ -299,12 +299,87 @@ primer cliente real tenga un solo plantel.
   33 tests pasan, 4 se saltan por ese archivo). `npm run build` y
   `npm run lint` sí pasan completos sin aplicar nada.
 
+- 2026-08-22: Se implementaron "portales por rol" — el último pendiente
+  explícito de la Oleada 1 del MVP (CLAUDE.md sección 3). **Con esta sesión
+  se completa la Oleada 1 entera**: alumnos, kardex/calificaciones,
+  asistencia, comunicación y portales por rol, los cinco módulos listados en
+  CLAUDE.md sección 3, funcionando de punta a punta.
+
+  Dos partes acopladas, resueltas en la misma sesión porque exponer una UI
+  reducida a `alumno` sin restringir también la base de datos hubiera sido
+  solo cosmético:
+
+  1. **Hueco de seguridad cerrado**: las políticas de SELECT de `alumnos`,
+     `calificaciones`, `asistencias` y `avisos` solo filtraban por
+     `plantel_id`, sin considerar el rol — una cuenta con rol `alumno` (ya
+     posible desde el sistema de invitaciones) veía las calificaciones y
+     asistencia de TODOS los alumnos de su plantel, no solo las suyas.
+     Violaba mínimo privilegio y "interés superior del menor" (CLAUDE.md
+     4.4). Además no existía ningún vínculo entre un perfil `alumno` y su
+     fila de `alumnos` — eran entidades desconectadas. Dos migraciones
+     nuevas: `supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql`
+     (columna `alumnos.perfil_id`, columna `invitaciones.alumno_id`, y
+     `aceptar_invitacion` actualizada para vincular ambas al aceptar una
+     invitación) y
+     `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`
+     (reemplaza las 4 políticas de SELECT — INSERT/UPDATE quedan intactas,
+     sin cambio de comportamiento para staff/docente) — **ambas pendientes
+     de aplicar manualmente en el SQL Editor de Supabase, en ese orden**,
+     igual que las migraciones anteriores. `docente` mantiene a propósito
+     visibilidad de todo el plantel (no hay todavía asignación de
+     materias/grupos por docente, fuera de alcance de esta sesión).
+
+  2. **Portales por rol**: `/dashboard` deja de ser idéntico para todos los
+     roles. `administrativo`/`oficina_central` ven la navegación completa
+     (Alumnos, Materias, Asistencia, Avisos, Invitar usuarios); `docente` ve
+     Alumnos/Asistencia/Avisos (sin Materias ni Invitar usuarios); `alumno`
+     ya no ve un menú general — ve directamente su propio kardex (componente
+     compartido nuevo `src/app/alumnos/[id]/vista-kardex.tsx`, extraído de
+     `/alumnos/[id]` para no duplicar ese layout) y sus avisos, resueltos vía
+     el nuevo caso de uso `obtener-alumno-vinculado`. Si su perfil todavía no
+     está vinculado a ningún alumno, ve un mensaje explícito en vez de una
+     página vacía o un error.
+
+  El flujo de invitaciones (`/plantel/invitaciones`) se extendió para poder
+  vincular: al invitar con rol "Alumno" aparece un selector con los alumnos
+  del plantel sin cuenta todavía (`listar-alumnos-sin-vincular`, caso de uso
+  nuevo), o un mensaje claro si no hay ninguno. `crear-invitacion` acepta un
+  `alumnoId` opcional (solo relevante para rol `alumno`) — es opcional a
+  propósito: sigue siendo válido invitar a un alumno sin seleccionar a cuál
+  vincular, el portal de esa cuenta simplemente informará que falta
+  vincularla.
+
+  Detalle de diseño completo (ambas migraciones, las 4 políticas de SELECT
+  reemplazadas, los 2 casos de uso nuevos de Alumnos, y la navegación por
+  rol) en [ARCHITECTURE.md](../docs/ARCHITECTURE.md#identidadroles).
+
+  **Cubierto por un test nuevo de un tipo distinto al resto del suite**:
+  `tests/aislamiento-alumnos.test.ts` verifica aislamiento **dentro** del
+  mismo tenant (no entre tenants, ya cubierto por el resto de la suite) — una
+  cuenta con rol `alumno` vinculada a un alumno X no puede ver las
+  calificaciones/asistencia de otro alumno Y de su MISMO plantel, y staff
+  (`oficina_central`) sigue viendo todo su plantel sin restricciones. Se
+  corrió el suite completo (37 tests preexistentes) para confirmar que
+  endurecer la RLS no rompió ninguna visibilidad legítima de staff — todos
+  siguen en verde.
+
+  **Pendiente antes de que `npm test` pase en verde completo** (mismo patrón
+  documentado en cada módulo con migración nueva): aplicar ambas migraciones
+  en el proyecto de Supabase de desarrollo, en orden — sin ellas,
+  `tests/aislamiento-alumnos.test.ts` falla con "column alumnos.perfil_id
+  does not exist" (el resto de la suite, 37 tests de módulos ya aplicados,
+  sigue en verde). `npm run build` y `npm run lint` sí pasan completos sin
+  aplicar nada.
+
 ## Próximo paso
 
-Con Identidad/Roles (incluyendo invitaciones), Alumnos, Calificaciones/
-Kardex, Asistencia y Comunicación mínimos funcionando, el único pendiente
-para cerrar por completo la Oleada 1 del MVP es "portales por rol"
-(CLAUDE.md sección 3) — ya no está bloqueado: el sistema de invitaciones
-permite tener cuentas reales de `docente`/`alumno` para probarlo. Otras
-tareas no bloqueantes pendientes de sesiones anteriores: configurar los
-tests de aislamiento en CI (GitHub Actions).
+**Oleada 1 del MVP completa** (CLAUDE.md sección 3): alumnos, kardex/
+calificaciones, asistencia, comunicación y portales por rol, los cinco
+funcionando de punta a punta. Antes de considerar Oleada 2 (cobranza/pagos,
+horarios/carga académica, tickets de soporte), pendientes no bloqueantes de
+sesiones anteriores: configurar los tests de aislamiento en CI (GitHub
+Actions); aplicar en el proyecto de Supabase de desarrollo las dos
+migraciones más recientes (ver entrada de arriba) y todas las anteriores
+todavía no aplicadas (revisar `supabase/migrations/` contra el estado real
+del proyecto, ya son 10 migraciones acumuladas sin aplicar automáticamente —
+no hay CLI vinculado al proyecto remoto ni token configurado).

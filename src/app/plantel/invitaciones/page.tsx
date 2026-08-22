@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { crearClienteServidor } from "@/lib/supabase/server";
 import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
 import { listarInvitaciones } from "@/modules/identidad/casos-uso/listar-invitaciones";
+import { listarAlumnosSinVincular } from "@/modules/alumnos/casos-uso/listar-alumnos-sin-vincular";
 import { FormularioCrearInvitacion } from "./formulario";
 
 // Mismos roles que exige la política RLS `invitaciones_select/insert_staff_
@@ -76,6 +77,14 @@ export default async function PaginaInvitaciones() {
 
   const { invitaciones } = resultado;
 
+  const resultadoAlumnosSinVincular = await listarAlumnosSinVincular(supabase);
+
+  if (!resultadoAlumnosSinVincular.exito) {
+    throw new Error(resultadoAlumnosSinVincular.error);
+  }
+
+  const { alumnos: alumnosSinVincular } = resultadoAlumnosSinVincular;
+
   const encabezados = await headers();
   const origen =
     encabezados.get("origin") ?? `http://${encabezados.get("host")}`;
@@ -93,7 +102,7 @@ export default async function PaginaInvitaciones() {
           </p>
         </div>
 
-        <FormularioCrearInvitacion />
+        <FormularioCrearInvitacion alumnosSinVincular={alumnosSinVincular} />
 
         {invitaciones.length === 0 ? (
           <p className="text-center text-zinc-600">

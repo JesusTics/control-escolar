@@ -17,6 +17,11 @@ export interface Invitacion {
   expira_en: string;
   usada_en: string | null;
   created_at: string;
+  // Alumno a vincular cuando `rol = 'alumno'` — columna agregada en
+  // supabase/migrations/20260822200141_vincular_alumno_a_perfil.sql. `null`
+  // para invitaciones de otros roles, o cuando se invita a un alumno sin
+  // seleccionar a cuál vincular todavía (ver crear-invitacion.ts).
+  alumno_id: string | null;
 }
 
 // El estado no vive en la base de datos como columna — se deriva en el caso
