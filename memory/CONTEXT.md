@@ -51,6 +51,20 @@ primer cliente real tenga un solo plantel.
   el principio actual de "evitar Docker" del stack; es una decisión a
   tomar en una sesión futura, no en esta.
 
+- 2026-08-22: Se implementó el módulo Identidad/Roles mínimo: login,
+  onboarding del primer plantel+usuario, sesión protegida. Migración
+  `supabase/migrations/20260822075713_alta_inicial_identidad.sql` con la
+  función `security definer` `crear_plantel_y_perfil_inicial` (pendiente de
+  aplicar manualmente en el SQL Editor de Supabase, igual que la anterior).
+  Se agregó `@supabase/ssr` y se migró el cliente browser existente a
+  `createBrowserClient` para compartir sesión servidor/cliente vía cookies.
+  Detalle de diseño en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#identidadroles). Pendiente
+  conocido: si la confirmación de email está activada en el proyecto de
+  Supabase, el flujo de registro no completa automáticamente el alta de
+  plantel/perfil tras confirmar — queda como decisión a tomar en una sesión
+  futura.
+
 ## Próximo paso
 
 Con la arquitectura y el stack ya validados, el siguiente paso natural es

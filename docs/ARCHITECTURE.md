@@ -7,8 +7,74 @@
 ## Bounded contexts
 
 _Pendiente — se documentará cada bounded context (Alumnos, Calificaciones,
-Asistencia, Comunicacion, Identidad/Roles) conforme se implemente, con sus
-puertos (interfaces) y adaptadores concretos._
+Asistencia, Comunicacion) conforme se implemente, con sus puertos
+(interfaces) y adaptadores concretos._
+
+### Identidad/Roles
+
+Alcance actual (mínimo): login con email + contraseña, alta del primer
+plantel + perfil de un usuario nuevo, sesión protegida vía middleware.
+Explícitamente fuera de este alcance: invitar usuarios adicionales a un
+plantel existente, gestión de roles posterior al alta inicial.
+
+**Auth**: Supabase Auth con email + contraseña (no magic link) — más
+predecible para el perfil de usuario administrativo/docente no técnico que
+es el público objetivo del producto (ver CLAUDE.md sección 7).
+
+**Casos de uso** (`src/modules/identidad/casos-uso/`): `iniciar-sesion`,
+`cerrar-sesion`, `registrar-plantel-inicial`, `obtener-perfil-actual`. Cada
+uno recibe el cliente de Supabase ya instanciado como parámetro (inyectado
+desde el Server Action/Server Component que lo invoca) en vez de crearlo
+internamente, para quedar testeables sin mockear módulos — aplica aquí el
+criterio de hexagonal ligero de ADR-0001 (hay integración externa real:
+Supabase Auth).
+
+**Alta del primer plantel — problema del huevo y la gallina**: las
+políticas RLS de `perfiles`/`planteles` (`perfiles_select_propio`,
+`planteles_select_propio` vía `plantel_id_actual()`) asumen que el usuario
+ya tiene una fila en `perfiles`. Un usuario recién registrado en Supabase
+Auth todavía no la tiene, así que no hay forma de insertarla desde el
+cliente con el rol `authenticated` normal sin abrir una política de
+`INSERT` sin restricciones en `planteles`/`perfiles` — lo que permitiría a
+cualquier usuario autenticado crear planteles arbitrarios o perfiles con
+rol distinto al de la alta inicial.
+
+Se resolvió con una función Postgres `security definer`,
+`crear_plantel_y_perfil_inicial(p_nombre_plantel, p_nombre_completo)`
+(migración `supabase/migrations/20260822075713_alta_inicial_identidad.sql`),
+invocada por RPC desde el caso de uso `registrar-plantel-inicial`. La
+función valida `auth.uid()` y que el usuario no tenga perfil todavía, y
+agrupa ambos INSERTs en una transacción. Se evitó deliberadamente:
+
+- **`service_role` en el código de la app**: se salta RLS por completo y
+  viviría embebido en el proceso de Next.js — prohibido explícitamente por
+  CLAUDE.md 4.3.
+- **Políticas de `INSERT` abiertas** en `perfiles`/`planteles`: permitirían
+  a cualquier usuario autenticado crear filas arbitrarias, no solo su alta
+  inicial.
+
+La función `security definer` queda acotada a esa única operación
+("crear mi primer plantel y perfil"), con sus propias validaciones, en vez
+de otorgar privilegios amplios al proceso de la app.
+
+**Caso borde sin resolver todavía**: si el proyecto de Supabase tiene
+confirmación de email activada (comportamiento por defecto), `auth.signUp`
+no deja sesión activa de inmediato, así que el RPC de alta (que requiere
+`auth.uid()`) no se puede llamar en ese momento. El flujo actual solo
+informa al usuario ("revisa tu correo para confirmar tu cuenta") pero no
+retoma automáticamente la creación del plantel/perfil cuando el usuario
+confirma e inicia sesión después — `/dashboard` detecta este estado
+(sesión válida sin perfil) y muestra un mensaje en vez de fallar o entrar
+en loop de redirects, pero no hay todavía un flujo de "completar
+onboarding". Pendiente de decisión en una sesión futura.
+
+**Sesión SSR**: `src/lib/supabase/client.ts` (browser, `createBrowserClient`
+de `@supabase/ssr`), `src/lib/supabase/server.ts` (Server
+Components/Actions, cookies de `next/headers`) y `src/lib/supabase/middleware.ts`
++ `middleware.ts` en la raíz (refresco de sesión en cada request) siguen el
+patrón oficial de `@supabase/ssr` para Next.js App Router, de modo que la
+sesión se comparte de forma consistente entre servidor y cliente vía
+cookies en vez de vivir solo en `localStorage`.
 
 ## Modelo de datos
 

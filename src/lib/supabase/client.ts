@@ -1,5 +1,10 @@
 // Cliente de Supabase para el navegador (adaptador de infraestructura).
-import { createClient } from "@supabase/supabase-js";
+//
+// Usa `createBrowserClient` de `@supabase/ssr` (en vez de `createClient` de
+// `@supabase/supabase-js` directo) para que la sesión se comparta de forma
+// consistente entre Server Components/Server Actions y el cliente vía
+// cookies, en lugar de vivir solo en localStorage del navegador.
+import { createBrowserClient } from "@supabase/ssr";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -11,4 +16,6 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export function crearClienteNavegador() {
+  return createBrowserClient(supabaseUrl!, supabaseAnonKey!);
+}
