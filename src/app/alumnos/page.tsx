@@ -57,6 +57,15 @@ export default async function PaginaAlumnos() {
           >
             Avisos
           </Link>
+          {/* Se agrega siempre; la propia página bloquea con "no tienes
+              permiso" si el rol no es administrativo/oficina_central — mismo
+              criterio que el resto de esta barra de navegación mínima. */}
+          <Link
+            href="/plantel/invitaciones"
+            className="flex h-14 flex-1 items-center justify-center rounded-lg border border-zinc-300 text-lg font-semibold text-zinc-900 transition-colors hover:bg-zinc-100"
+          >
+            Invitar usuarios
+          </Link>
         </div>
 
         {alumnos.length === 0 ? (

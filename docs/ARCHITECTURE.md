@@ -228,21 +228,26 @@ en un conflicto de unicidad.
 ### Identidad/Roles
 
 Alcance actual (mínimo): login con email + contraseña, alta del primer
-plantel + perfil de un usuario nuevo, sesión protegida vía middleware.
-Explícitamente fuera de este alcance: invitar usuarios adicionales a un
-plantel existente, gestión de roles posterior al alta inicial.
+plantel + perfil de un usuario nuevo, sesión protegida vía middleware,
+**sistema de invitaciones** para dar de alta usuarios adicionales
+(docente/alumno/administrativo) a un plantel ya existente. Explícitamente
+fuera de este alcance (ver diseño de la sesión de invitaciones):
+portales diferenciados por rol (siguiente sesión), envío real de correo (el
+link de invitación se comparte manualmente, mismo criterio que Comunicación)
+y revocar/reenviar invitaciones (solo alta + aceptación + expiración pasiva).
 
 **Auth**: Supabase Auth con email + contraseña (no magic link) — más
 predecible para el perfil de usuario administrativo/docente no técnico que
 es el público objetivo del producto (ver CLAUDE.md sección 7).
 
 **Casos de uso** (`src/modules/identidad/casos-uso/`): `iniciar-sesion`,
-`cerrar-sesion`, `registrar-plantel-inicial`, `obtener-perfil-actual`. Cada
-uno recibe el cliente de Supabase ya instanciado como parámetro (inyectado
-desde el Server Action/Server Component que lo invoca) en vez de crearlo
-internamente, para quedar testeables sin mockear módulos — aplica aquí el
-criterio de hexagonal ligero de ADR-0001 (hay integración externa real:
-Supabase Auth).
+`cerrar-sesion`, `registrar-plantel-inicial`, `obtener-perfil-actual`,
+`crear-invitacion`, `listar-invitaciones`, `obtener-info-invitacion`,
+`aceptar-invitacion`. Cada uno recibe el cliente de Supabase ya instanciado
+como parámetro (inyectado desde el Server Action/Server Component que lo
+invoca) en vez de crearlo internamente, para quedar testeables sin mockear
+módulos — aplica aquí el criterio de hexagonal ligero de ADR-0001 (hay
+integración externa real: Supabase Auth).
 
 **Alta del primer plantel — problema del huevo y la gallina**: las
 políticas RLS de `perfiles`/`planteles` (`perfiles_select_propio`,
@@ -319,6 +324,118 @@ Components/Actions, cookies de `next/headers`) y `src/lib/supabase/middleware.ts
 patrón oficial de `@supabase/ssr` para Next.js App Router, de modo que la
 sesión se comparte de forma consistente entre servidor y cliente vía
 cookies en vez de vivir solo en `localStorage`.
+
+**Sistema de invitaciones — mismo problema del huevo y la gallina que el
+alta inicial**: dar de alta un *segundo* usuario (docente, alumno, u otro
+administrativo) en un plantel ya existente tiene el mismo obstáculo que el
+alta del primer plantel — la persona invitada todavía no tiene fila en
+`perfiles`, así que no puede pasar las políticas RLS normales para
+insertarse a sí misma. Se resuelve con el mismo criterio (CLAUDE.md 4.3):
+funciones `security definer` acotadas a una sola operación cada una, nunca
+`service_role` en el código de la app ni políticas de `INSERT`/`SELECT`
+abiertas.
+
+**Tabla `public.invitaciones`**, definida en
+`supabase/migrations/20260822191914_invitaciones_plantel.sql`.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_invitaciones_plantel_id`) |
+| `email` | `text` | Obligatorio — correo de la persona invitada |
+| `rol` | `text` | `not null`, `check` restringido a `administrativo`/`docente`/`alumno` (sin `oficina_central` — no tiene sentido invitar a un segundo `oficina_central` en este alcance) |
+| `token` | `uuid` | `not null`, único, default `gen_random_uuid()` — identifica el link público de aceptación |
+| `creada_por` | `uuid` | `not null`, referencia `perfiles(id)` |
+| `expira_en` | `timestamptz` | `not null`, default `now() + 7 días` |
+| `usada_en` | `timestamptz` | `null` hasta que se acepta la invitación |
+| `created_at` | `timestamptz` | Default `now()` |
+
+RLS habilitada. Dos políticas, ambas restringidas a staff
+(`administrativo`/`oficina_central`) del mismo plantel:
+
+- `invitaciones_select_staff_mismo_plantel`: solo staff del plantel puede
+  ver las invitaciones de su plantel — un docente/alumno no puede listar
+  invitaciones ajenas ni propias por esta vía (la pantalla de aceptación usa
+  el RPC público, no un `select` directo, ver abajo).
+- `invitaciones_insert_staff_mismo_plantel`: exige `plantel_id =
+  plantel_id_actual()`, `creada_por = auth.uid()` (nadie puede crear una
+  invitación a nombre de otro usuario) y rol de staff — mismo criterio que
+  `avisos_insert_staff_mismo_plantel`.
+
+Ninguna política de `UPDATE`/`DELETE` — no hay caso de uso de
+revocar/reenviar en este alcance (decisión explícita, ver diseño de la
+sesión); una invitación vencida o mal enviada simplemente se vuelve a crear.
+
+**Dos funciones `security definer`, cada una acotada a una sola operación**
+(mismo criterio que `crear_plantel_y_perfil_inicial`):
+
+- `obtener_invitacion_publica(p_token uuid)`: `language sql`, `stable`.
+  Devuelve solo lo necesario para renderizar la pantalla de aceptación
+  (`plantel_nombre`, `rol`, `email`, `valida`) a partir del token — nunca la
+  fila completa de `invitaciones` ni datos de otras invitaciones. Otorgada a
+  `anon` y `authenticated` (la persona invitada todavía no tiene sesión la
+  primera vez que abre el link). Se evitó deliberadamente una política de
+  `SELECT` abierta en `invitaciones` para este caso — expondría todas las
+  invitaciones de todos los planteles a cualquiera, no solo la del token
+  consultado.
+- `aceptar_invitacion(p_token uuid, p_nombre_completo text)`: `language
+  plpgsql`. Valida, en una sola transacción: `auth.uid()` no nulo, que el
+  usuario no tenga perfil todavía (de un solo uso, mismo criterio que el
+  alta inicial), que el token exista, que la invitación no esté usada ni
+  expirada, y que el email de la invitación coincida (case-insensitive) con
+  el email de la cuenta autenticada (`auth.email()`) — evita que alguien use
+  el link de invitación de otra persona con su propia cuenta. Si todo pasa,
+  inserta el perfil con el `plantel_id`/`rol` de la invitación y marca
+  `usada_en = now()`. Otorgada solo a `authenticated` (requiere sesión ya
+  creada por `signUp`/`signInWithPassword`, a diferencia del RPC anterior).
+
+**Casos de uso**: `crear-invitacion` (valida email/rol, resuelve
+`plantel_id`/`creada_por` desde la sesión actual — nunca del formulario,
+mismo criterio que el resto de módulos; traduce el 42501 de RLS a mensaje de
+negocio); `listar-invitaciones` (trae las invitaciones del plantel y deriva
+el `estado` — `pendiente`/`usada`/`expirada` — a partir de
+`usada_en`/`expira_en` en el propio caso de uso, no en la UI, para no
+duplicar esa regla); `obtener-info-invitacion` (llama al RPC público, sin
+requerir sesión); `aceptar-invitacion` (orquesta `signUp`, si no hay sesión
+todavía, y luego el RPC `aceptar_invitacion` — la validación de negocio vive
+en la función Postgres, no aquí, mismo patrón que
+`registrar-plantel-inicial`).
+
+**Misma limitación conocida de confirmación de email que el alta inicial**:
+si el proyecto de Supabase tuviera activada la confirmación de correo,
+`aceptar-invitacion` no podría completar el alta del perfil en el mismo paso
+(`signUp` no deja sesión inmediata, y el RPC requiere `auth.uid()`). No se
+resolvió de nuevo para este flujo — `aceptar-invitacion` simplemente informa
+que falta confirmar el correo, sin duplicar la lógica de
+`/auth/callback` (que hoy solo conoce el alta inicial de plantel, no
+invitaciones). El proyecto de desarrollo actual no tiene la confirmación
+activada, así que este camino no bloquea el uso normal.
+
+**UI**: `/plantel/invitaciones` (protegida — redirige a `/login` sin sesión,
+y muestra "no tienes permiso" si el rol no es `administrativo`/
+`oficina_central`, replicando en la página el mismo criterio de rol que
+exige la política RLS, para dar un mensaje explícito en vez de una lista
+vacía silenciosa): formulario de alta (email + rol) y, debajo, la lista de
+invitaciones con su estado y, para las pendientes, el link completo
+(`{origin}/invitacion/{token}`) como texto seleccionable — sin botón de
+"copiar" con JS, suficiente para el MVP. `/invitacion/[token]` (pública, sin
+sesión previa — no está protegida por el middleware, que solo refresca
+sesión sin forzar redirects): muestra "Te invitaron a unirte a {plantel}
+como {rol}" y el formulario de aceptación (nombre completo + contraseña,
+email fijo de la invitación mostrado con `readOnly`, no `disabled` — un
+input `disabled` no envía su valor al hacer submit) si la invitación es
+válida, o un mensaje claro si no existe/ya se usó/expiró.
+
+**Cubierta desde el primer commit** por
+`tests/aislamiento-invitaciones.test.ts` (CLAUDE.md 4.3) — ver/no-ver
+invitación ajena, spoofing de `plantel_id` rechazado por RLS, más un test
+funcional dedicado (la superficie de mayor riesgo de este módulo, no
+cubierta por los tres casos estándar de aislamiento): un tercer usuario de
+prueba (`test-invitado@controlescolar.test`) acepta una invitación creada
+por la cuenta de prueba A y el test verifica que su perfil quede con el
+`plantel_id` de A (no uno nuevo) y el `rol` asignado en la invitación (no
+`oficina_central`). Idempotente entre corridas, mismo criterio que el resto
+del suite.
 
 ## Modelo de datos
 

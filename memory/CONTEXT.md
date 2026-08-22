@@ -252,11 +252,59 @@ primer cliente real tenga un solo plantel.
   informativo por ahora, no filtra visibilidad por rol, precisamente por
   este hueco).
 
+- 2026-08-22: Se implementó el sistema de invitaciones de Identidad/Roles —
+  el prerrequisito que faltaba (ver pendiente explícito registrado en la
+  entrada anterior) antes de poder construir "portales por rol" (último
+  ítem de la Oleada 1, CLAUDE.md sección 3). Hasta ahora solo existía el
+  alta del primer usuario (`oficina_central`) de un plantel nuevo vía
+  `/registro`; los roles `docente`/`alumno` del `check` de `perfiles.rol`
+  eran papel muerto porque no había forma de dar de alta un segundo usuario
+  en un plantel ya existente. Migración nueva
+  `supabase/migrations/20260822191914_invitaciones_plantel.sql` con la tabla
+  `invitaciones`, RLS habilitada, índice en `plantel_id`, y dos funciones
+  `security definer` acotadas (`obtener_invitacion_publica`,
+  `aceptar_invitacion`) que resuelven el mismo "problema del huevo y la
+  gallina" que el alta inicial (la persona invitada no tiene perfil
+  todavía, así que no puede pasar RLS por sí misma) — **pendiente de aplicar
+  manualmente en el SQL Editor de Supabase**, igual que las migraciones
+  anteriores. Casos de uso nuevos en `src/modules/identidad/casos-uso/`
+  (`crear-invitacion`, `listar-invitaciones`, `obtener-info-invitacion`,
+  `aceptar-invitacion`). UI: `/plantel/invitaciones` (protegida por rol de
+  staff, con mensaje explícito de "no tienes permiso" si no aplica) y
+  `/invitacion/[token]` (pública, sin sesión previa). Alcance explícito NO
+  incluido en esta sesión: portales diferenciados por rol (siguiente
+  sesión), envío real de correo (el link se comparte manualmente, mismo
+  criterio que Comunicación), y revocar/reenviar invitaciones. Detalle
+  completo, incluyendo el diseño de ambos RPCs y por qué no se usó
+  `service_role` ni políticas abiertas, en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#identidadroles).
+
+  Test funcional dedicado en `tests/aislamiento-invitaciones.test.ts` — más
+  allá de los tres casos estándar de aislamiento RLS, cubre la superficie de
+  mayor riesgo del módulo: un tercer usuario de prueba
+  (`test-invitado@controlescolar.test`) acepta una invitación real y el test
+  verifica que termine con el `plantel_id` correcto (el del invitador, no
+  uno nuevo) y el `rol` de la invitación (no el rol del alta inicial).
+
+  **Con esto ya es posible tener cuentas reales de `docente`/`alumno`** — el
+  bloqueador que impedía empezar "portales por rol" queda resuelto. Esa es
+  la pieza natural a construir en la siguiente sesión para cerrar por
+  completo la Oleada 1 del MVP.
+
+  **Pendiente antes de que `npm test` pase en verde completo** (mismo patrón
+  documentado en cada módulo con tabla nueva): aplicar la migración en el
+  proyecto de Supabase de desarrollo — sin ella,
+  `tests/aislamiento-invitaciones.test.ts` falla con "Could not find the
+  table 'public.invitaciones'" (el resto de la suite sigue en verde:
+  33 tests pasan, 4 se saltan por ese archivo). `npm run build` y
+  `npm run lint` sí pasan completos sin aplicar nada.
+
 ## Próximo paso
 
-Con Identidad/Roles, Alumnos, Calificaciones/Kardex, Asistencia y
-Comunicación mínimos funcionando, la Oleada 1 del MVP está completa excepto
-por "portales por rol" (ver pendiente explícito arriba: requiere primero un
-caso de uso de invitar/dar de alta usuarios adicionales a un plantel
-existente). Otras tareas no bloqueantes pendientes de sesiones anteriores:
-configurar los tests de aislamiento en CI (GitHub Actions).
+Con Identidad/Roles (incluyendo invitaciones), Alumnos, Calificaciones/
+Kardex, Asistencia y Comunicación mínimos funcionando, el único pendiente
+para cerrar por completo la Oleada 1 del MVP es "portales por rol"
+(CLAUDE.md sección 3) — ya no está bloqueado: el sistema de invitaciones
+permite tener cuentas reales de `docente`/`alumno` para probarlo. Otras
+tareas no bloqueantes pendientes de sesiones anteriores: configurar los
+tests de aislamiento en CI (GitHub Actions).
