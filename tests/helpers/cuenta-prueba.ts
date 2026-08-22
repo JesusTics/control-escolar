@@ -15,8 +15,34 @@
 // esconder una regresión en el caso de uso.
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { registrarPlantelInicial } from "@/modules/identidad/casos-uso/registrar-plantel-inicial";
-import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
+import {
+  obtenerPerfilActual,
+  type ResultadoPerfilActual,
+} from "@/modules/identidad/casos-uso/obtener-perfil-actual";
 import type { PerfilConPlantel } from "@/modules/identidad/dominio/perfil";
+
+/**
+ * `obtenerPerfilActual` justo después de iniciar sesión puede fallar de forma
+ * intermitente con "JWT issued at future" — un desfase de reloj transitorio
+ * entre los servicios internos de Supabase (Auth vs. PostgREST), observado
+ * tanto en local como en CI, que se autorresuelve en segundos. No es un error
+ * de nuestro código, así que reintentamos solo esta clase de error puntual en
+ * vez de dejar fallar el test entero por un hipo de infraestructura ajena.
+ */
+export async function obtenerPerfilConReintento(
+  supabase: SupabaseClient,
+  intentos = 3,
+): Promise<ResultadoPerfilActual> {
+  let resultado: ResultadoPerfilActual;
+  for (let intento = 0; intento < intentos; intento++) {
+    resultado = await obtenerPerfilActual(supabase);
+    if (resultado.exito || !resultado.error.includes("JWT issued at future")) {
+      return resultado;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500 * (intento + 1)));
+  }
+  return resultado!;
+}
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -81,7 +107,7 @@ export async function obtenerOCrearCuentaDePrueba(
     }
   }
 
-  const perfilExistente = await obtenerPerfilActual(supabase);
+  const perfilExistente = await obtenerPerfilConReintento(supabase);
 
   if (!perfilExistente.exito) {
     throw new Error(
@@ -107,7 +133,7 @@ export async function obtenerOCrearCuentaDePrueba(
     );
   }
 
-  const perfilFinal = await obtenerPerfilActual(supabase);
+  const perfilFinal = await obtenerPerfilConReintento(supabase);
 
   if (!perfilFinal.exito || !perfilFinal.perfil) {
     throw new Error(

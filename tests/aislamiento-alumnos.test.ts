@@ -21,6 +21,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
   obtenerOCrearCuentaDePrueba,
+  obtenerPerfilConReintento,
   type CuentaDePrueba,
 } from "./helpers/cuenta-prueba";
 import { inscribirAlumno } from "@/modules/alumnos/casos-uso/inscribir-alumno";
@@ -31,7 +32,6 @@ import { registrarCalificacion } from "@/modules/calificaciones/casos-uso/regist
 import { registrarAsistenciaDelDia } from "@/modules/asistencia/casos-uso/registrar-asistencia-del-dia";
 import { crearInvitacion } from "@/modules/identidad/casos-uso/crear-invitacion";
 import { aceptarInvitacion } from "@/modules/identidad/casos-uso/aceptar-invitacion";
-import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -182,7 +182,7 @@ beforeAll(async () => {
 
   let perfilYaExiste = false;
   if (!inicioSesion.error) {
-    const perfilExistente = await obtenerPerfilActual(supabaseAlumnoX);
+    const perfilExistente = await obtenerPerfilConReintento(supabaseAlumnoX);
     if (!perfilExistente.exito) {
       throw new Error(
         `No se pudo leer el perfil de la cuenta alumno X: ${perfilExistente.error}`,

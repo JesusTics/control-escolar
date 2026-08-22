@@ -16,11 +16,11 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createClient } from "@supabase/supabase-js";
 import {
   obtenerOCrearCuentaDePrueba,
+  obtenerPerfilConReintento,
   type CuentaDePrueba,
 } from "./helpers/cuenta-prueba";
 import { crearInvitacion } from "@/modules/identidad/casos-uso/crear-invitacion";
 import { aceptarInvitacion } from "@/modules/identidad/casos-uso/aceptar-invitacion";
-import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
 import type { RolInvitable } from "@/modules/identidad/dominio/invitacion";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -175,7 +175,7 @@ describe("flujo funcional — aceptar invitación", () => {
       // como éxito esperado — no se vuelve a llamar el RPC, que fallaría con
       // "El usuario ya tiene un perfil" (es de un solo uso por diseño,
       // mismo criterio que `crear_plantel_y_perfil_inicial`).
-      const perfilExistente = await obtenerPerfilActual(supabaseInvitado);
+      const perfilExistente = await obtenerPerfilConReintento(supabaseInvitado);
 
       if (!perfilExistente.exito) {
         throw new Error(
@@ -199,7 +199,7 @@ describe("flujo funcional — aceptar invitación", () => {
       }
     }
 
-    const perfilFinal = await obtenerPerfilActual(supabaseInvitado);
+    const perfilFinal = await obtenerPerfilConReintento(supabaseInvitado);
 
     if (!perfilFinal.exito || !perfilFinal.perfil) {
       throw new Error(
