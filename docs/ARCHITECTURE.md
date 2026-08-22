@@ -33,6 +33,46 @@ del formulario, para no depender de que el cliente envíe un `plantel_id`
 arbitrario — la fuente de verdad del tenant del usuario es siempre su
 perfil, nunca un valor de formulario.
 
+### Calificaciones
+
+Alcance actual (mínimo): catálogo de materias por plantel, registro (y
+corrección) de calificaciones por alumno/materia/periodo, y kardex de un
+alumno con promedio general. Explícitamente fuera de este alcance (ver
+instrucciones de la sesión): edición/borrado de calificaciones más allá de
+re-registrar (upsert), boletas/reportes en PDF, gestión de periodos
+escolares como catálogo propio (`periodo` es texto libre, ej. "2026-1"), y
+permisos granulares de "solo el docente que imparte la materia puede
+calificarla" (cualquier rol de staff puede, por ahora).
+
+**Casos de uso** (`src/modules/calificaciones/casos-uso/`): `crear-materia`,
+`listar-materias`, `registrar-calificacion`, `obtener-kardex-alumno`. Mismo
+patrón de cliente de Supabase inyectado que Alumnos/Identidad. Se aplica
+hexagonal ligero aquí de forma explícita — CLAUDE.md 4.1 usa Calificaciones
+(promedios, reprobación) como el ejemplo textual de "lógica de negocio no
+trivial" que justifica aislar la lógica de dominio del framework/proveedor.
+
+**Lógica de dominio pura** (`src/modules/calificaciones/dominio/calificacion.ts`):
+`NOTA_APROBATORIA = 6` (escala 0-10), `estaAprobado(calificacion)`,
+`calcularPromedio(calificaciones)` (retorna `null` en arreglo vacío, nunca
+divide entre cero). Sin dependencias de Supabase ni de red — testeable en
+aislamiento total, cubierta por `tests/dominio/calificaciones.test.ts`
+(TDD-lite en lógica crítica, CLAUDE.md sección 5).
+
+**Decisión de diseño — upsert en vez de insert**: `registrar-calificacion`
+usa `.upsert()` con `onConflict: 'alumno_id,materia_id,periodo'` en vez de
+`.insert()`. Volver a capturar la misma materia/periodo para un alumno
+actualiza la calificación existente en vez de fallar por violación de
+unicidad — es el comportamiento esperado cuando un docente corrige una nota
+ya capturada, y es explícitamente la única forma de "editar" en este alcance
+(no hay un caso de uso de edición/borrado separado).
+
+**Kardex**: `obtener-kardex-alumno` trae el alumno, sus calificaciones (con
+el nombre de materia vía `select` anidado de Supabase,
+`materia:materias(nombre)`), el promedio general (`calcularPromedio` sobre
+todas las calificaciones del alumno) y si está aprobado en cada materia
+(`estaAprobado` aplicado a la calificación individual — no hay promedio por
+materia todavía, es una sola calificación por materia/periodo).
+
 ### Identidad/Roles
 
 Alcance actual (mínimo): login con email + contraseña, alta del primer
@@ -220,6 +260,64 @@ está cubierta, junto con `planteles`/`perfiles`, por
 `tests/aislamiento-multitenant.test.ts` — ver sección "Decisiones técnicas"
 más abajo y la adenda de ADR-0001.
 
+### `public.materias`
+
+Catálogo de materias por plantel, definido en
+`supabase/migrations/20260822184852_materias_catalogo.sql`. Base para poder
+registrar calificaciones — sin horarios/carga académica (eso es Oleada 2).
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_materias_plantel_id`) |
+| `nombre` | `text` | Obligatorio. Único por plantel (`unique(plantel_id, nombre)`) |
+| `created_at` | `timestamptz` | Default `now()` |
+
+RLS habilitada. Dos políticas:
+
+- `materias_select_mismo_plantel`: cualquier usuario autenticado del plantel
+  puede ver sus materias.
+- `materias_insert_staff_mismo_plantel`: solo `administrativo` u
+  `oficina_central` pueden crear materias — a diferencia de `calificaciones`,
+  no incluye `docente` (dar de alta el catálogo de materias es una tarea
+  administrativa, no docente).
+
+### `public.calificaciones`
+
+Registro de calificaciones por alumno/materia/periodo, definido en
+`supabase/migrations/20260822184856_calificaciones_registro_y_kardex.sql`.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_calificaciones_plantel_id`) |
+| `alumno_id` | `uuid` | `not null`, referencia `alumnos(id)`. Indexado (`idx_calificaciones_alumno_id`) |
+| `materia_id` | `uuid` | `not null`, referencia `materias(id)` |
+| `periodo` | `text` | Obligatorio, texto libre (ej. `"2026-1"`) — sin catálogo de periodos en este alcance |
+| `calificacion` | `numeric(4,2)` | `not null`, `check` entre 0 y 10 |
+| `created_at` / `updated_at` | `timestamptz` | Default `now()` |
+
+Restricción `unique(alumno_id, materia_id, periodo)` — una sola calificación
+por alumno/materia/periodo, es la que habilita el patrón de `upsert` del caso
+de uso en vez de `insert`.
+
+RLS habilitada. Tres políticas:
+
+- `calificaciones_select_mismo_plantel`: cualquier usuario autenticado del
+  plantel puede ver las calificaciones de su plantel.
+- `calificaciones_insert_staff_mismo_plantel` /
+  `calificaciones_update_staff_mismo_plantel`: a diferencia de `alumnos` y
+  `materias`, incluyen el rol `docente` además de `administrativo` y
+  `oficina_central` — calificar es tarea docente en la vida real, aunque hoy
+  no exista todavía un flujo de alta de usuarios con ese rol. Se deja la
+  política lista porque no tiene costo adicional definirla junto con la
+  tabla (mismo criterio que la política de `UPDATE` sin uso todavía de
+  `alumnos`).
+
+**Cubierta desde el primer commit** por
+`tests/aislamiento-calificaciones.test.ts` (CLAUDE.md 4.3) — ver/no-ver
+materia y calificación ajenas, spoofing de `plantel_id` rechazado por RLS.
+
 ## Decisiones técnicas
 
 ### Testing de aislamiento multi-tenant (RLS)
@@ -239,10 +337,20 @@ datos viven permanentemente en el proyecto de desarrollo) en la
 
 **Cómo correr los tests**: `npm test` (requiere `.env.local` con
 `NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` del proyecto de
-desarrollo). Archivos: `tests/aislamiento-multitenant.test.ts` (casos),
-`tests/helpers/cuenta-prueba.ts` (helper idempotente de alta/login de
-cuentas de prueba), `vitest.config.mts` + `tests/setup.ts` (carga de env y
-polyfill de `WebSocket`, requerido por `@supabase/supabase-js` en Node 20).
+desarrollo). Archivos: `tests/aislamiento-multitenant.test.ts` (planteles,
+perfiles, alumnos), `tests/aislamiento-calificaciones.test.ts` (materias,
+calificaciones — nuevo archivo en vez de extender el existente, para no
+mezclar los casos de un módulo con los de otro, pero reusando el mismo
+helper), `tests/helpers/cuenta-prueba.ts` (helper idempotente de alta/login
+de cuentas de prueba, reutilizado sin cambios por ambos archivos),
+`vitest.config.mts` + `tests/setup.ts` (carga de env y polyfill de
+`WebSocket`, requerido por `@supabase/supabase-js` en Node 20).
+
+Nota sobre orden de ejecución: cada archivo de test de Vitest corre en su
+propio proceso/worker, así que `tests/aislamiento-calificaciones.test.ts` no
+asume que `tests/aislamiento-multitenant.test.ts` ya corrió — dan de alta su
+propio alumno de prueba (`TEST-A-001`) de forma idempotente si todavía no
+existe, en vez de depender de un orden entre archivos.
 
 ## Diagrama de capas
 

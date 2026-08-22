@@ -32,12 +32,20 @@ export default async function PaginaAlumnos() {
           </p>
         </div>
 
-        <Link
-          href="/alumnos/nuevo"
-          className="flex h-14 w-full items-center justify-center rounded-lg bg-zinc-900 text-lg font-semibold text-white transition-colors hover:bg-zinc-700"
-        >
-          Inscribir alumno
-        </Link>
+        <div className="flex gap-3">
+          <Link
+            href="/alumnos/nuevo"
+            className="flex h-14 flex-1 items-center justify-center rounded-lg bg-zinc-900 text-lg font-semibold text-white transition-colors hover:bg-zinc-700"
+          >
+            Inscribir alumno
+          </Link>
+          <Link
+            href="/materias"
+            className="flex h-14 flex-1 items-center justify-center rounded-lg border border-zinc-300 text-lg font-semibold text-zinc-900 transition-colors hover:bg-zinc-100"
+          >
+            Materias
+          </Link>
+        </div>
 
         {alumnos.length === 0 ? (
           <p className="text-center text-zinc-600">
@@ -46,9 +54,10 @@ export default async function PaginaAlumnos() {
         ) : (
           <div className="flex flex-col divide-y divide-zinc-200 rounded-lg border border-zinc-200 bg-white">
             {alumnos.map((alumno) => (
-              <div
+              <Link
                 key={alumno.id}
-                className="flex items-center justify-between gap-4 px-4 py-3"
+                href={`/alumnos/${alumno.id}`}
+                className="flex items-center justify-between gap-4 px-4 py-3 transition-colors hover:bg-zinc-50"
               >
                 <div className="flex flex-col">
                   <span className="font-medium text-zinc-900">
@@ -67,7 +76,7 @@ export default async function PaginaAlumnos() {
                 >
                   {alumno.estado}
                 </span>
-              </div>
+              </Link>
             ))}
           </div>
         )}

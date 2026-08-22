@@ -153,9 +153,34 @@ primer cliente real tenga un solo plantel.
      prueba creada (usuario en Authentication → Users, y sus filas en
      `perfiles`/`planteles`) si no se quiere dejar basura en el proyecto.
 
+- 2026-08-22: Se implementó el módulo Calificaciones/Kardex mínimo
+  (siguiente módulo del roadmap del MVP tras Alumnos): catálogo de materias,
+  registro/corrección de calificaciones (upsert por
+  `alumno_id,materia_id,periodo`) y kardex de alumno con promedio general.
+  Dos migraciones nuevas:
+  `supabase/migrations/20260822184852_materias_catalogo.sql` (tabla
+  `materias`) y
+  `supabase/migrations/20260822184856_calificaciones_registro_y_kardex.sql`
+  (tabla `calificaciones`) — **pendientes de aplicar manualmente en el SQL
+  Editor de Supabase**, igual que las anteriores. Lógica de dominio pura
+  (`NOTA_APROBATORIA`, `estaAprobado`, `calcularPromedio`) en
+  `src/modules/calificaciones/dominio/calificacion.ts`, aplicando hexagonal
+  ligero de forma explícita (CLAUDE.md 4.1 la usa como ejemplo textual).
+  Test de aislamiento multi-tenant en el mismo commit que las tablas nuevas
+  (`tests/aislamiento-calificaciones.test.ts`), como exige CLAUDE.md 4.3 —
+  a diferencia de `alumnos`, aquí no quedó como deuda técnica. Detalle
+  completo en [ARCHITECTURE.md](../docs/ARCHITECTURE.md#calificaciones).
+
+  **Pendiente antes de que `npm test` pase en verde completo**: aplicar
+  ambas migraciones nuevas en el proyecto de Supabase de desarrollo — sin
+  ellas, `tests/aislamiento-calificaciones.test.ts` falla con "Could not
+  find the table 'public.materias'" (el resto de la suite, dominio y
+  aislamiento de alumnos, sigue en verde). `npm run build` sí pasa completo
+  sin aplicar nada, porque no depende de las tablas en build time.
+
 ## Próximo paso
 
-Con Identidad/Roles y Alumnos mínimos funcionando, y ya resuelta la
-estrategia de testing de aislamiento multi-tenant, el siguiente paso natural
-es Calificaciones/kardex o Asistencia (ambos dependen de Alumnos), o
-configurar estos tests en CI (GitHub Actions).
+Con Identidad/Roles, Alumnos y Calificaciones/Kardex mínimos funcionando,
+el siguiente paso natural es Asistencia (depende de Alumnos igual que
+Calificaciones) o Comunicación, o configurar los tests de aislamiento en CI
+(GitHub Actions) — pendiente no bloqueante desde la sesión anterior.
