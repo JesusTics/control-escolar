@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { crearClienteServidor } from "@/lib/supabase/server";
 import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
 import { BotonCerrarSesion } from "./boton-cerrar-sesion";
@@ -53,6 +54,12 @@ export default async function PaginaDashboard() {
         </p>
         <p className="text-lg text-zinc-600">Rol: {perfil.rol}</p>
       </div>
+      <Link
+        href="/alumnos"
+        className="flex h-14 w-full max-w-xs items-center justify-center rounded-lg bg-zinc-900 text-lg font-semibold text-white transition-colors hover:bg-zinc-700"
+      >
+        Alumnos
+      </Link>
       <BotonCerrarSesion />
     </div>
   );

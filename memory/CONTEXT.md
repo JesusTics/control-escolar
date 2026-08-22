@@ -65,9 +65,32 @@ primer cliente real tenga un solo plantel.
   plantel/perfil tras confirmar — queda como decisión a tomar en una sesión
   futura.
 
+- 2026-08-22: Se implementó el módulo Alumnos mínimo (primer módulo de
+  negocio real del MVP): inscripción y listado de alumnos de un plantel.
+  Migración `supabase/migrations/20260822165852_alumnos_alta_y_listado.sql`
+  con la tabla `alumnos`, RLS habilitada, e índice en `plantel_id`
+  (pendiente de aplicar manualmente en el SQL Editor de Supabase, igual que
+  las migraciones anteriores). Casos de uso en
+  `src/modules/alumnos/casos-uso/` (`inscribir-alumno`, `listar-alumnos`)
+  siguiendo el mismo patrón de cliente Supabase inyectado que Identidad.
+  Explícitamente fuera de alcance: expediente completo, edición/baja, y
+  datos sensibles (médicos, tutores) — eso requiere primero resolver
+  cifrado en reposo (CLAUDE.md 4.4), no implementado todavía. Detalle en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#public-alumnos).
+
+  **Deuda técnica registrada explícitamente**: esta tabla se creó sin el
+  test automático de aislamiento multi-tenant que CLAUDE.md 4.3 exige "desde
+  el primer commit que toque una tabla nueva" — no es un olvido, es el mismo
+  pendiente de estrategia de testing (Supabase CLI + Docker vs. alternativa)
+  ya documentado como no resuelto en
+  [ADR-0001](../docs/adr/0001-validacion-arquitectura-inicial.md) y en la
+  entrada de la fundación multi-tenant arriba. Queda como riesgo abierto que
+  debe resolverse antes de cualquier release, no solo para `alumnos` sino
+  para toda tabla con RLS del proyecto.
+
 ## Próximo paso
 
-Con la arquitectura y el stack ya validados, el siguiente paso natural es
-empezar a inicializar el repo (Next.js + TypeScript) y el proyecto de
-Supabase, antes de tocar el primer caso de uso del MVP (probablemente
-Alumnos, por ser la base de la que dependen Calificaciones y Asistencia).
+Con Identidad/Roles y Alumnos mínimos funcionando, el siguiente paso natural
+es Calificaciones/kardex o Asistencia (dependen de Alumnos), o bien resolver
+la estrategia de testing de aislamiento multi-tenant que sigue pendiente
+desde la fundación de la base de datos.

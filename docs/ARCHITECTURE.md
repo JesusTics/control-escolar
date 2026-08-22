@@ -6,9 +6,32 @@
 
 ## Bounded contexts
 
-_Pendiente — se documentará cada bounded context (Alumnos, Calificaciones,
-Asistencia, Comunicacion) conforme se implemente, con sus puertos
-(interfaces) y adaptadores concretos._
+_Pendiente — se documentará cada bounded context (Calificaciones, Asistencia,
+Comunicacion) conforme se implemente, con sus puertos (interfaces) y
+adaptadores concretos._
+
+### Alumnos
+
+Alcance actual (mínimo): alta e inscripción de un alumno y listado de
+alumnos del plantel del usuario actual. Explícitamente fuera de este
+alcance (sesión futura): expediente completo, edición, baja, y cualquier
+dato sensible (médico, tutores) — este último requiere resolver primero
+cifrado en reposo (CLAUDE.md 4.4), que no está implementado todavía.
+
+**Casos de uso** (`src/modules/alumnos/casos-uso/`): `inscribir-alumno`,
+`listar-alumnos`. Mismo patrón que Identidad/Roles: reciben el cliente de
+Supabase ya instanciado como parámetro en vez de crearlo internamente. Se
+aplica hexagonal ligero aquí (no CRUD puro) porque hay lógica de negocio
+real: validación de campos obligatorios y unicidad de matrícula por
+plantel, con traducción del error crudo de Postgres (código `23505`, y
+`42501` cuando RLS rechaza el INSERT por rol) a un mensaje de negocio claro
+— ver ADR-0001 sobre el criterio de cuándo aplicar hexagonal.
+
+`inscribir-alumno` resuelve el `plantel_id` a partir de
+`obtener-perfil-actual` (reutilizado de Identidad/Roles) en vez de recibirlo
+del formulario, para no depender de que el cliente envíe un `plantel_id`
+arbitrario — la fuente de verdad del tenant del usuario es siempre su
+perfil, nunca un valor de formulario.
 
 ### Identidad/Roles
 
@@ -128,6 +151,45 @@ política.
 - No está cubierto el caso de `oficina_central` viendo varios planteles de
   la misma red — corresponde a la oleada de "red de planteles", no a esta
   fundación mínima.
+
+### `public.alumnos`
+
+Primer módulo de negocio real del MVP, definido en
+`supabase/migrations/20260822165852_alumnos_alta_y_listado.sql`. Alta
+mínima de alumno para inscripción y listado — sin expediente completo ni
+datos sensibles (ver alcance en la sección "Alumnos" de Bounded contexts).
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_alumnos_plantel_id`) por ser columna de política RLS |
+| `matricula` | `text` | Obligatoria. Única por plantel (`unique(plantel_id, matricula)`) |
+| `nombre_completo` | `text` | Obligatorio |
+| `fecha_nacimiento` | `date` | Opcional |
+| `estado` | `text` | `not null`, default `'activo'`, `check` restringido a `activo`/`inactivo` |
+| `created_at` | `timestamptz` | Default `now()` |
+
+RLS habilitada. Tres políticas:
+
+- `alumnos_select_mismo_plantel`: cualquier usuario autenticado del plantel
+  (`plantel_id = plantel_id_actual()`) puede ver sus alumnos — incluye
+  alumnos y docentes, no solo staff, porque el listado por sí solo no
+  expone datos sensibles.
+- `alumnos_insert_staff_mismo_plantel`: solo perfiles con rol
+  `administrativo` u `oficina_central` del mismo plantel pueden insertar
+  (verificado vía `exists (select 1 from perfiles where id = auth.uid() and
+  rol in (...))`).
+- `alumnos_update_staff_mismo_plantel`: misma restricción de rol que el
+  INSERT, para futuras ediciones (`USING` y `WITH CHECK` ambos acotados a
+  `plantel_id_actual()`). No hay todavía un caso de uso de edición — la
+  política se dejó lista porque no tiene costo adicional definirla junto
+  con la tabla.
+
+**Deuda técnica marcada explícitamente**: esta tabla se creó sin el test
+automático de aislamiento multi-tenant que CLAUDE.md 4.3 exige "desde el
+primer commit que toque una tabla nueva" — la estrategia de testing sigue
+sin resolverse (mismo pendiente que la fundación multi-tenant, ver
+ADR-0001). Ver `memory/CONTEXT.md` para el registro de esta deuda.
 
 ## Decisiones técnicas
 
