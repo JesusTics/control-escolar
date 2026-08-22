@@ -280,6 +280,26 @@ describe("aislamiento dentro del mismo plantel (RLS) — cuenta alumno solo ve l
   });
 });
 
+describe("visibilidad de perfiles dentro del mismo plantel (colegas) — migración 20260822213647", () => {
+  // `perfiles_select_mismo_plantel` reemplazó a `perfiles_select_propio`
+  // para que joins como `autor:perfiles(nombre_completo)` en
+  // `listar-avisos.ts` puedan resolver el nombre de cualquier colega del
+  // mismo plantel, no solo el propio. El aislamiento ENTRE planteles sigue
+  // cubierto por "el usuario A no puede ver el perfil del usuario B" en
+  // tests/aislamiento-multitenant.test.ts (planteles distintos) — este test
+  // cubre el caso complementario, DENTRO del mismo plantel.
+  it("el alumno X SÍ puede ver el nombre_completo del perfil de cuentaA (mismo plantel)", async () => {
+    const { data, error } = await supabaseAlumnoX
+      .from("perfiles")
+      .select("nombre_completo")
+      .eq("id", cuentaA.perfil.id);
+
+    expect(error).toBeNull();
+    expect(data).toHaveLength(1);
+    expect(data?.[0]?.nombre_completo).toBe(cuentaA.perfil.nombre_completo);
+  });
+});
+
 describe("staff (oficina_central) sigue viendo todo su plantel sin restricciones", () => {
   it("cuentaA ve a los alumnos X y Y en su listado", async () => {
     const resultado = await listarAlumnos(cuentaA.supabase);
