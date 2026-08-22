@@ -37,6 +37,20 @@ primer cliente real tenga un solo plantel.
   requisitos LFPDPPP (aviso de privacidad, ARCO operable), y se fijó región
   Sudamérica para Supabase/Vercel por cercanía a México.
 
+- 2026-08-22: Se creó la fundación multi-tenant de la base de datos:
+  migración `supabase/migrations/20260822074551_fundacion_multitenant.sql`
+  con tablas `planteles` y `perfiles`, RLS habilitada en ambas, función
+  `plantel_id_actual()` y políticas mínimas de `SELECT`. Documentado en
+  [ARCHITECTURE.md](../docs/ARCHITECTURE.md#modelo-de-datos). Pendiente:
+  (1) el usuario debe aplicar esta migración manualmente en el SQL Editor
+  del dashboard de Supabase (todavía no hay CLI vinculado al proyecto
+  remoto ni token configurado); (2) sigue sin resolver la estrategia de
+  testing automatizado de aislamiento RLS mencionada como pendiente en
+  [ADR-0001](../docs/adr/0001-validacion-arquitectura-inicial.md) —
+  probablemente requiera Supabase CLI local con Docker, lo cual contradice
+  el principio actual de "evitar Docker" del stack; es una decisión a
+  tomar en una sesión futura, no en esta.
+
 ## Próximo paso
 
 Con la arquitectura y el stack ya validados, el siguiente paso natural es
