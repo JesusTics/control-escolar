@@ -29,7 +29,7 @@ const NAV_STAFF: ItemNav[] = [
   { href: "/asistencia", etiqueta: "Asistencia" },
   { href: "/avisos", etiqueta: "Avisos" },
   { href: "/plantel/invitaciones", etiqueta: "Invitar usuarios" },
-  { href: "/plantel/asignaciones", etiqueta: "Asignaciones" },
+  { href: "/plantel/grupos", etiqueta: "Grupos" },
   { href: "/plantel/solicitudes-arco", etiqueta: "Solicitudes ARCO" },
   { href: "/derechos-arco", etiqueta: "Derechos ARCO" },
 ];

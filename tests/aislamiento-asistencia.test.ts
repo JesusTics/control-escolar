@@ -4,10 +4,17 @@
 // Editor ni `service_role`. Reusa el helper de cuentas de prueba fijas
 // (tests/helpers/cuenta-prueba.ts) sin duplicarlo.
 //
+// Reescrito para el modelo de Grupos (supabase/migrations/
+// 20260823003328_grupos_e_inscripciones.sql,
+// 20260823003336_asistencia_por_grupo.sql): la asistencia se toma por
+// sesión de grupo, y exige que el alumno esté inscrito
+// (`public.inscripciones`) antes de recibir un registro — mismo caso de
+// aislamiento entre planteles que antes (A vs. B), migrado al nuevo esquema.
+//
 // Fecha fija y determinista (2026-01-15, en el pasado respecto a "hoy" del
 // proyecto) para que la corrida sea idempotente: `registrarAsistenciaDelDia`
-// usa upsert por `alumno_id,fecha`, así que volver a correr el test suite no
-// duplica filas ni falla por unicidad.
+// usa upsert por `alumno_id,grupo_id,fecha`, así que volver a correr el test
+// suite no duplica filas ni falla por unicidad.
 //
 // Este archivo no asume que otros archivos de test ya corrieron (cada
 // archivo de Vitest corre en su propio proceso/worker): da de alta su propio
@@ -18,16 +25,25 @@ import { obtenerOCrearCuentaDePrueba, type CuentaDePrueba } from "./helpers/cuen
 import { inscribirAlumno } from "@/modules/alumnos/casos-uso/inscribir-alumno";
 import { listarAlumnos } from "@/modules/alumnos/casos-uso/listar-alumnos";
 import { registrarAsistenciaDelDia } from "@/modules/asistencia/casos-uso/registrar-asistencia-del-dia";
+import { crearMateria } from "@/modules/calificaciones/casos-uso/crear-materia";
+import { listarMaterias } from "@/modules/calificaciones/casos-uso/listar-materias";
+import { crearGrupo } from "@/modules/grupos/casos-uso/crear-grupo";
+import { listarGruposPlantel } from "@/modules/grupos/casos-uso/listar-grupos-plantel";
+import { inscribirAlumnoGrupo } from "@/modules/grupos/casos-uso/inscribir-alumno-grupo";
 
 const EMAIL_A = "test-aislamiento-a@controlescolar.test";
 const EMAIL_B = "test-aislamiento-b@controlescolar.test";
 const PASSWORD = "TestAislamiento123!";
 const MATRICULA_ALUMNO_A = "TEST-A-001";
 const FECHA_A = "2026-01-15";
+const NOMBRE_MATERIA_ASISTENCIA = "Historia (prueba aislamiento asistencia)";
+const NOMBRE_GRUPO_ASISTENCIA = "Grupo A (prueba aislamiento asistencia)";
+const PERIODO_ASISTENCIA = "2026-1";
 
 let cuentaA: CuentaDePrueba;
 let cuentaB: CuentaDePrueba;
 let alumnoIdA: string;
+let grupoIdA: string;
 
 beforeAll(async () => {
   cuentaA = await obtenerOCrearCuentaDePrueba(
@@ -67,9 +83,66 @@ beforeAll(async () => {
   }
   alumnoIdA = alumnoA.id;
 
+  const resultadoMateria = await crearMateria(cuentaA.supabase, {
+    nombre: NOMBRE_MATERIA_ASISTENCIA,
+  });
+  if (!resultadoMateria.exito) {
+    expect(resultadoMateria.error).toBe(
+      "Ya existe una materia con ese nombre en este plantel.",
+    );
+  }
+
+  const listaMateriasA = await listarMaterias(cuentaA.supabase);
+  if (!listaMateriasA.exito) {
+    throw new Error(`No se pudo listar materias de A: ${listaMateriasA.error}`);
+  }
+  const materiaAsistencia = listaMateriasA.materias.find(
+    (m) => m.nombre === NOMBRE_MATERIA_ASISTENCIA,
+  );
+  if (!materiaAsistencia) {
+    throw new Error("No se encontró la materia de prueba.");
+  }
+
+  const resultadoGrupo = await crearGrupo(cuentaA.supabase, {
+    materiaId: materiaAsistencia.id,
+    nombre: NOMBRE_GRUPO_ASISTENCIA,
+    periodo: PERIODO_ASISTENCIA,
+  });
+  if (!resultadoGrupo.exito) {
+    expect(resultadoGrupo.error).toBe(
+      "Ya existe un grupo con ese nombre para esa materia y periodo.",
+    );
+  }
+
+  const listaGruposA = await listarGruposPlantel(cuentaA.supabase);
+  if (!listaGruposA.exito) {
+    throw new Error(`No se pudo listar grupos de A: ${listaGruposA.error}`);
+  }
+  const grupoA = listaGruposA.grupos.find(
+    (g) =>
+      g.materia_id === materiaAsistencia.id &&
+      g.nombre === NOMBRE_GRUPO_ASISTENCIA &&
+      g.periodo === PERIODO_ASISTENCIA,
+  );
+  if (!grupoA) {
+    throw new Error("No se encontró el grupo de prueba.");
+  }
+  grupoIdA = grupoA.id;
+
+  const resultadoInscripcion = await inscribirAlumnoGrupo(cuentaA.supabase, {
+    alumnoId: alumnoIdA,
+    grupoId: grupoIdA,
+  });
+  if (!resultadoInscripcion.exito) {
+    expect(resultadoInscripcion.error).toBe(
+      "Este alumno ya está inscrito en este grupo.",
+    );
+  }
+
   const resultadoAsistencia = await registrarAsistenciaDelDia(
     cuentaA.supabase,
     {
+      grupoId: grupoIdA,
       fecha: FECHA_A,
       registros: [{ alumnoId: alumnoIdA, estado: "presente" }],
     },
@@ -87,6 +160,7 @@ describe("aislamiento multi-tenant (RLS) — asistencias", () => {
       .from("asistencias")
       .select("*")
       .eq("alumno_id", alumnoIdA)
+      .eq("grupo_id", grupoIdA)
       .eq("fecha", FECHA_A);
 
     expect(error).toBeNull();
@@ -104,18 +178,19 @@ describe("aislamiento multi-tenant (RLS) — asistencias", () => {
     expect(data).toEqual([]);
   });
 
-  it("el usuario B no puede insertar un registro de asistencia con plantel_id/alumno_id del plantel de A (spoofing rechazado por RLS)", async () => {
+  it("el usuario B no puede insertar un registro de asistencia con plantel_id/alumno_id/grupo_id del plantel de A (spoofing rechazado por RLS)", async () => {
     const { data, error } = await cuentaB.supabase
       .from("asistencias")
       .insert({
         plantel_id: cuentaA.perfil.plantel_id,
         alumno_id: alumnoIdA,
+        grupo_id: grupoIdA,
         fecha: "2026-01-16",
         estado: "presente",
       })
       .select();
 
-    // La política `asistencias_insert_staff_mismo_plantel` exige
+    // La política `asistencias_insert_staff_o_docente_grupo` exige
     // `plantel_id = plantel_id_actual()` en su WITH CHECK — el plantel_id
     // del insert es el de A, no el de B, así que Postgres rechaza la fila
     // con el código 42501 (política RLS violada).

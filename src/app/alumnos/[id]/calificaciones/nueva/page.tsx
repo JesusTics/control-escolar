@@ -2,8 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { crearClienteServidor } from "@/lib/supabase/server";
 import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
-import { listarMaterias } from "@/modules/calificaciones/casos-uso/listar-materias";
-import { listarMisMateriasAsignadas } from "@/modules/calificaciones/casos-uso/listar-mis-materias-asignadas";
+import { listarGruposDeAlumno } from "@/modules/grupos/casos-uso/listar-grupos-de-alumno";
 import { FormularioRegistrarCalificacion } from "./formulario";
 
 export default async function PaginaNuevaCalificacion({
@@ -28,36 +27,39 @@ export default async function PaginaNuevaCalificacion({
     throw new Error(resultadoPerfil.error);
   }
 
-  // El selector de materia se filtra según el rol: staff (administrativo/
-  // oficina_central) sigue viendo TODAS las materias del plantel, como hasta
-  // ahora; `docente` ve solo las que tiene asignadas
-  // (`public.docente_materias`, ver ARCHITECTURE.md sección Calificaciones)
-  // — es el mismo alcance que exigen las políticas RLS
-  // `calificaciones_insert/update_staff_o_docente_asignado`, replicado aquí
-  // para no ofrecer en el selector una materia que de todos modos sería
-  // rechazada al guardar.
-  const esDocente = resultadoPerfil.perfil?.rol === "docente";
-
-  const resultado = esDocente
-    ? await listarMisMateriasAsignadas(supabase)
-    : await listarMaterias(supabase);
+  // El selector ya no es de "materia" sino de "grupo" — lista los grupos en
+  // los que ESE alumno específico está inscrito. No se filtra por rol aquí:
+  // la política RLS `inscripciones_select_propia_o_staff_o_docente` ya
+  // acota lo que ve un `docente` a solo los grupos donde es el titular
+  // (`grupos.docente_id`), así que el resultado de
+  // `listarGruposDeAlumno` para un docente YA ES la intersección "grupos del
+  // alumno ∩ grupos del docente" pedida por la tarea — ver comentario en ese
+  // caso de uso. Staff ve todos los grupos del alumno, sin cambio.
+  const resultado = await listarGruposDeAlumno(supabase, id);
 
   if (!resultado.exito) {
     throw new Error(resultado.error);
   }
 
-  const { materias } = resultado;
+  const { grupos } = resultado;
 
-  if (esDocente && materias.length === 0) {
+  if (grupos.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 bg-zinc-50 px-6 py-16 text-center">
         <h1 className="text-2xl font-semibold text-zinc-900">
-          Todavía no tienes materias asignadas
+          Este alumno no está inscrito en ningún grupo
         </h1>
         <p className="max-w-md text-zinc-600">
-          Contacta al personal administrativo de tu plantel para que te
-          asigne al menos una materia antes de registrar calificaciones.
+          {resultadoPerfil.perfil?.rol === "docente"
+            ? "No tiene grupos tuyos en los que esté inscrito. Pide al personal administrativo que lo inscriba en uno de tus grupos desde \"Grupos\"."
+            : "Inscribe al alumno en un grupo primero, desde \"Grupos\", para poder registrar una calificación."}
         </p>
+        <Link
+          href="/plantel/grupos"
+          className="flex h-14 w-full max-w-xs items-center justify-center rounded-lg bg-zinc-900 text-lg font-semibold text-white transition-colors hover:bg-zinc-700"
+        >
+          Ir a Grupos
+        </Link>
         <Link
           href={`/alumnos/${id}`}
           className="text-center text-sm font-medium text-zinc-900 underline"
@@ -75,32 +77,11 @@ export default async function PaginaNuevaCalificacion({
           Registrar calificación
         </h1>
         <p className="text-zinc-600">
-          Captura la calificación del alumno en una materia y periodo
+          Captura la calificación del alumno en uno de sus grupos
         </p>
       </div>
 
-      {materias.length === 0 ? (
-        <div className="flex flex-col items-center gap-4 text-center">
-          <p className="max-w-sm text-zinc-600">
-            Todavía no hay materias en tu plantel. Crea una primero para
-            poder registrar calificaciones.
-          </p>
-          <Link
-            href="/materias/nueva"
-            className="flex h-14 w-full max-w-xs items-center justify-center rounded-lg bg-zinc-900 text-lg font-semibold text-white transition-colors hover:bg-zinc-700"
-          >
-            Crear materia
-          </Link>
-          <Link
-            href={`/alumnos/${id}`}
-            className="text-center text-sm font-medium text-zinc-900 underline"
-          >
-            Volver
-          </Link>
-        </div>
-      ) : (
-        <FormularioRegistrarCalificacion alumnoId={id} materias={materias} />
-      )}
+      <FormularioRegistrarCalificacion alumnoId={id} grupos={grupos} />
     </div>
   );
 }

@@ -20,8 +20,13 @@ export async function registrarAsistenciaAction(
   _estadoPrevio: EstadoRegistrarAsistencia,
   formData: FormData,
 ): Promise<EstadoRegistrarAsistencia> {
+  const grupoId = String(formData.get("grupoId") ?? "").trim();
   const fecha = String(formData.get("fecha") ?? "").trim();
   const alumnoIds = formData.getAll("alumnoId").map((valor) => String(valor));
+
+  if (!grupoId) {
+    return { error: "El grupo es obligatorio." };
+  }
 
   if (!fecha) {
     return { error: "La fecha es obligatoria." };
@@ -39,6 +44,7 @@ export async function registrarAsistenciaAction(
 
   const supabase = await crearClienteServidor();
   const resultado = await registrarAsistenciaDelDia(supabase, {
+    grupoId,
     fecha,
     registros,
   });

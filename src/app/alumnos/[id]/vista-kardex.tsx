@@ -109,7 +109,7 @@ export function VistaKardexAlumno({
             >
               <div className="flex flex-col">
                 <span className="font-medium text-zinc-900">
-                  {calificacion.materiaNombre}
+                  {calificacion.materiaNombre} — {calificacion.grupoNombre}
                 </span>
                 <span className="text-sm text-zinc-600">
                   Periodo: {calificacion.periodo}

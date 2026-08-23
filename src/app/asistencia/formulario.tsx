@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
-import type { Alumno } from "@/modules/alumnos/dominio/alumno";
+import type { InscripcionConAlumno } from "@/modules/grupos/dominio/grupo";
 import type { EstadoAsistencia } from "@/modules/asistencia/dominio/asistencia";
 import {
   registrarAsistenciaAction,
@@ -21,10 +21,12 @@ const OPCIONES_ESTADO: { valor: EstadoAsistencia; etiqueta: string }[] = [
 ];
 
 export function FormularioCapturaAsistencia({
+  grupoId,
   alumnos,
   fechaInicial,
 }: {
-  alumnos: Alumno[];
+  grupoId: string;
+  alumnos: InscripcionConAlumno[];
   fechaInicial: string;
 }) {
   const [estado, accion, enviando] = useActionState(
@@ -34,6 +36,7 @@ export function FormularioCapturaAsistencia({
 
   return (
     <form action={accion} className="flex w-full flex-col gap-6">
+      <input type="hidden" name="grupoId" value={grupoId} />
       <div className="flex flex-col gap-1">
         <label htmlFor="fecha" className="text-sm font-medium text-zinc-700">
           Fecha
@@ -49,22 +52,26 @@ export function FormularioCapturaAsistencia({
       </div>
 
       <div className="flex flex-col divide-y divide-zinc-200 rounded-lg border border-zinc-200 bg-white">
-        {alumnos.map((alumno) => (
+        {alumnos.map((inscripcion) => (
           <div
-            key={alumno.id}
+            key={inscripcion.alumno_id}
             className="flex items-center justify-between gap-4 px-4 py-3"
           >
-            <input type="hidden" name="alumnoId" value={alumno.id} />
+            <input
+              type="hidden"
+              name="alumnoId"
+              value={inscripcion.alumno_id}
+            />
             <div className="flex flex-col">
               <span className="font-medium text-zinc-900">
-                {alumno.nombre_completo}
+                {inscripcion.alumnoNombre}
               </span>
               <span className="text-sm text-zinc-600">
-                Matrícula: {alumno.matricula}
+                Matrícula: {inscripcion.alumnoMatricula}
               </span>
             </div>
             <select
-              name={`estado-${alumno.id}`}
+              name={`estado-${inscripcion.alumno_id}`}
               defaultValue="presente"
               className="h-12 rounded-lg border border-zinc-300 px-3 text-base"
             >

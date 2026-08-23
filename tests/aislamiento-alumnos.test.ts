@@ -30,6 +30,9 @@ import { crearMateria } from "@/modules/calificaciones/casos-uso/crear-materia";
 import { listarMaterias } from "@/modules/calificaciones/casos-uso/listar-materias";
 import { registrarCalificacion } from "@/modules/calificaciones/casos-uso/registrar-calificacion";
 import { registrarAsistenciaDelDia } from "@/modules/asistencia/casos-uso/registrar-asistencia-del-dia";
+import { crearGrupo } from "@/modules/grupos/casos-uso/crear-grupo";
+import { listarGruposPlantel } from "@/modules/grupos/casos-uso/listar-grupos-plantel";
+import { inscribirAlumnoGrupo } from "@/modules/grupos/casos-uso/inscribir-alumno-grupo";
 import { crearInvitacion } from "@/modules/identidad/casos-uso/crear-invitacion";
 import { aceptarInvitacion } from "@/modules/identidad/casos-uso/aceptar-invitacion";
 
@@ -45,6 +48,7 @@ const PASSWORD = "TestAislamiento123!";
 const MATRICULA_ALUMNO_X = "TEST-A-ALUMNO-VINCULADO";
 const MATRICULA_ALUMNO_Y = "TEST-A-002";
 const NOMBRE_MATERIA = "Historia (prueba aislamiento por rol)";
+const NOMBRE_GRUPO = "Grupo A (prueba aislamiento por rol)";
 const PERIODO = "2026-1";
 const FECHA_ASISTENCIA = "2026-01-20";
 
@@ -122,11 +126,53 @@ beforeAll(async () => {
   }
   const materiaId = materia.id;
 
+  // Grupo de prueba e inscripción de AMBOS alumnos (X e Y) — requisito de
+  // integridad del nuevo esquema (supabase/migrations/
+  // 20260823003328_grupos_e_inscripciones.sql y siguientes): no se puede
+  // calificar/tomar asistencia a un alumno que no está inscrito en el
+  // grupo. Ambos comparten grupo a propósito: el aislamiento que prueba
+  // este archivo es por `alumno_id` (rol `alumno` viendo solo lo suyo), no
+  // por grupo — ver tests/aislamiento-grupos.test.ts para el aislamiento
+  // por titularidad docente<->grupo.
+  const resultadoGrupo = await crearGrupo(cuentaA.supabase, {
+    materiaId,
+    nombre: NOMBRE_GRUPO,
+    periodo: PERIODO,
+  });
+  if (!resultadoGrupo.exito) {
+    expect(resultadoGrupo.error).toBe(
+      "Ya existe un grupo con ese nombre para esa materia y periodo.",
+    );
+  }
+
+  const listaGrupos = await listarGruposPlantel(cuentaA.supabase);
+  if (!listaGrupos.exito) {
+    throw new Error(`No se pudo listar grupos de A: ${listaGrupos.error}`);
+  }
+  const grupo = listaGrupos.grupos.find(
+    (g) => g.materia_id === materiaId && g.nombre === NOMBRE_GRUPO && g.periodo === PERIODO,
+  );
+  if (!grupo) {
+    throw new Error("No se encontró el grupo de prueba.");
+  }
+  const grupoId = grupo.id;
+
+  for (const alumnoId of [alumnoIdX, alumnoIdY]) {
+    const resultadoInscripcion = await inscribirAlumnoGrupo(cuentaA.supabase, {
+      alumnoId,
+      grupoId,
+    });
+    if (!resultadoInscripcion.exito) {
+      expect(resultadoInscripcion.error).toBe(
+        "Este alumno ya está inscrito en este grupo.",
+      );
+    }
+  }
+
   // Calificación y asistencia de Y — lo que X NO debe poder ver.
   const resultadoCalifY = await registrarCalificacion(cuentaA.supabase, {
     alumnoId: alumnoIdY,
-    materiaId,
-    periodo: PERIODO,
+    grupoId,
     calificacion: 9,
   });
   if (!resultadoCalifY.exito) {
@@ -136,6 +182,7 @@ beforeAll(async () => {
   }
 
   const resultadoAsistY = await registrarAsistenciaDelDia(cuentaA.supabase, {
+    grupoId,
     fecha: FECHA_ASISTENCIA,
     registros: [{ alumnoId: alumnoIdY, estado: "presente" }],
   });
@@ -148,8 +195,7 @@ beforeAll(async () => {
   // Calificación y asistencia propias de X — lo que X SÍ debe poder ver.
   const resultadoCalifX = await registrarCalificacion(cuentaA.supabase, {
     alumnoId: alumnoIdX,
-    materiaId,
-    periodo: PERIODO,
+    grupoId,
     calificacion: 7,
   });
   if (!resultadoCalifX.exito) {
@@ -159,6 +205,7 @@ beforeAll(async () => {
   }
 
   const resultadoAsistX = await registrarAsistenciaDelDia(cuentaA.supabase, {
+    grupoId,
     fecha: FECHA_ASISTENCIA,
     registros: [{ alumnoId: alumnoIdX, estado: "presente" }],
   });

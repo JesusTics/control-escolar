@@ -36,15 +36,32 @@ funcionando de punta a punta y verificados en navegador:
   diferenciados por rol.
 - **Alumnos**: inscripción y expediente básico, con datos sensibles
   (contacto de tutor, información médica) cifrados en reposo.
+- **Grupos** (Oleada 2, "horarios/carga académica" acotado a su mínimo, tras
+  una plática de alcance explícita): un alumno se inscribe individualmente a
+  "grupos" (`/plantel/grupos`, staff — instancia concreta de una materia
+  impartida por un docente en un periodo, estilo universidad, varios grupos
+  por alumno), no un solo grupo fijo tipo primaria. Reemplaza por completo la
+  asignación docente<->materia general (`docente_materias`, retirada): ahora
+  un docente se asigna directamente a un grupo (`grupos.docente_id`).
 - **Calificaciones/Kardex**: catálogo de materias, registro de
-  calificaciones, kardex con promedio, y asignación docente<->materia
-  (`/plantel/asignaciones`, staff) — un docente solo puede ver/calificar las
-  materias que tiene asignadas, no todo el plantel como antes. Migración
-  `20260823000049_asignacion_docente_materia.sql` pendiente de aplicar
-  manualmente en Supabase (igual que el resto).
-- **Asistencia**: captura masiva diaria, porcentaje calculado por alumno.
+  calificaciones por alumno/**grupo** (ya no materia/periodo directo) —
+  exige que el alumno esté inscrito en el grupo, kardex con promedio.
+- **Asistencia**: se toma **por sesión de grupo** (ya no diaria general del
+  plantel) — un alumno puede tener asistencia distinta en dos materias el
+  mismo día; el docente solo captura en los grupos donde es titular.
 - **Comunicación**: tablón de avisos interno (sin envío real de correo/SMS
   todavía).
+
+4 migraciones nuevas pendientes de aplicar manualmente en Supabase, EN ESTE
+ORDEN: `20260823003328_grupos_e_inscripciones.sql`,
+`20260823003332_calificaciones_por_grupo.sql`,
+`20260823003336_asistencia_por_grupo.sql`,
+`20260823003340_retirar_docente_materias.sql`. Las dos de en medio **borran
+las filas existentes** de `calificaciones`/`asistencias` antes de aplicar el
+esquema nuevo (no había forma de resolver retroactivamente a qué grupo
+pertenecía cada fila vieja) — aceptable porque solo eran datos de
+desarrollo/prueba ("Plantel de Prueba"), pero implica recrear esos datos de
+prueba después de aplicar la migración.
 
 **Cumplimiento LFPDPPP mínimo también completo** (CLAUDE.md 4.4): cifrado en
 reposo (AES-256-GCM en capa de aplicación, la clave nunca vive en Postgres),
@@ -55,16 +72,20 @@ aviso de privacidad formal (`/aviso-privacidad`, aceptación obligatoria en
 **Infraestructura**: CI activo en GitHub Actions
 (`github.com/JesusTics/control-escolar`, corre en cada push/PR a `main` —
 lint + build + test, tres secrets configurados: `NEXT_PUBLIC_SUPABASE_URL`,
-`NEXT_PUBLIC_SUPABASE_ANON_KEY`, `CIFRADO_CLAVE`). 14 migraciones en
+`NEXT_PUBLIC_SUPABASE_ANON_KEY`, `CIFRADO_CLAVE`). 18 migraciones en
 `supabase/migrations/`; todas aplicadas manualmente en el proyecto Supabase
-de desarrollo excepto la última (`20260823000049_asignacion_docente_materia.sql`,
-pendiente — ver "Pendientes conocidos" abajo). No hay CLI de Supabase
-vinculado (decisión documentada en ADR-0001). 64 tests (`npm test`): 58 en
-verde, 4 skip y 2 fallando a propósito hasta que se aplique la migración
-pendiente de arriba, incluyendo aislamiento multi-tenant corriendo contra el
-proyecto Supabase real (no Docker, no SQL Editor — ver adenda de testing del
-ADR-0001). `docs/SETUP.md` completo
-para levantar el proyecto desde cero.
+de desarrollo excepto las últimas 5 (desde
+`20260823000049_asignacion_docente_materia.sql` hasta
+`20260823003340_retirar_docente_materias.sql`, deben aplicarse en ese orden
+exacto — ver "Pendientes conocidos" abajo). No hay CLI de Supabase
+vinculado (decisión documentada en ADR-0001). `npm test` tiene archivos que
+fallan a propósito hasta que se apliquen esas migraciones pendientes
+(`tests/aislamiento-grupos.test.ts`, `tests/aislamiento-calificaciones.test.ts`,
+`tests/aislamiento-asistencia.test.ts`, y parte de
+`tests/aislamiento-alumnos.test.ts`), incluyendo aislamiento multi-tenant
+corriendo contra el proyecto Supabase real (no Docker, no SQL Editor — ver
+adenda de testing del ADR-0001). `docs/SETUP.md` completo para levantar el
+proyecto desde cero.
 
 **Decisiones de diseño clave** (detalle completo en ADR-0001 y
 ARCHITECTURE.md, no lo repitas aquí si necesitas el razonamiento):
@@ -84,16 +105,19 @@ ARCHITECTURE.md, no lo repitas aquí si necesitas el razonamiento):
 - **Despliegue en Vercel**: no configurado todavía.
 - **`CIFRADO_CLAVE`**: generar una distinta por entorno (desarrollo, CI,
   eventual producción) — nunca reusar la misma.
-- **Migración `20260823000049_asignacion_docente_materia.sql` sin aplicar**:
-  hasta que se aplique manualmente en Supabase, `docente` sigue viendo todo
-  el plantel en `calificaciones` (comportamiento anterior) y
-  `tests/aislamiento-docente-materias.test.ts` falla — es esperado, no una
-  regresión.
+- **Las 4 migraciones de Grupos sin aplicar** (ver arriba): hasta que se
+  apliquen manualmente en Supabase, en orden, la tabla `public.grupos` no
+  existe todavía y `tests/aislamiento-grupos.test.ts`,
+  `tests/aislamiento-calificaciones.test.ts`,
+  `tests/aislamiento-asistencia.test.ts` y las secciones de
+  `tests/aislamiento-alumnos.test.ts` que dependen de grupos fallan — es
+  esperado, no una regresión (mismo patrón que migraciones anteriores).
 
 ## Próximo paso
 
-Antes de tocar **Oleada 2** (cobranza/pagos, horarios/carga académica,
-tickets de soporte — CLAUDE.md sección 8): falta una plática de alcance,
-ninguno de los tres módulos se ha discutido a fondo todavía (a diferencia
-de la Oleada 1, que sí partió de una validación de arquitectura explícita).
-No arrancar código de Oleada 2 sin esa conversación primero.
+**Oleada 2** (CLAUDE.md sección 8) ya arrancó: "horarios/carga académica" se
+resolvió a su mínimo con el bounded context Grupos (ver arriba), tras una
+plática de alcance explícita con el usuario. Cobranza/pagos en línea y
+tickets de soporte interno siguen sin discutirse a fondo — no arrancar
+código de esos dos sin una plática de alcance primero, mismo criterio que
+se siguió para Grupos.

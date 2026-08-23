@@ -1,7 +1,7 @@
 // Tipos y lógica de dominio del bounded context Calificaciones.
 // Reflejan la forma de las tablas `public.materias` / `public.calificaciones`
 // definidas en `supabase/migrations/20260822184852_materias_catalogo.sql` y
-// `supabase/migrations/20260822184856_calificaciones_registro_y_kardex.sql`.
+// `supabase/migrations/20260823003332_calificaciones_por_grupo.sql`.
 //
 // Sin dependencias de Supabase ni de red — testeable en aislamiento total
 // (ver tests/dominio/calificaciones.test.ts). Aplica hexagonal ligero aquí
@@ -15,36 +15,19 @@ export interface Materia {
   created_at: string;
 }
 
+// Desde 20260823003332_calificaciones_por_grupo.sql: una calificación se
+// registra por (alumno, grupo) — el grupo (bounded context Grupos, ver
+// src/modules/grupos/) ya trae la materia y el periodo, así que dejaron de
+// ser columnas directas de esta tabla. Reemplaza el modelo anterior de
+// (alumno, materia, periodo) directo.
 export interface Calificacion {
   id: string;
   plantel_id: string;
   alumno_id: string;
-  materia_id: string;
-  periodo: string;
+  grupo_id: string;
   calificacion: number;
   created_at: string;
   updated_at: string;
-}
-
-// Asignación docente <-> materia (`public.docente_materias`, agregada en
-// supabase/migrations/20260823000049_asignacion_docente_materia.sql):
-// cierra el hueco de mínimo privilegio de "cualquier docente puede calificar
-// cualquier materia del plantel". Alcance: docente<->materia únicamente, no
-// docente<->grupo (no existe todavía el concepto de "grupos" de alumnos).
-export interface DocenteMateria {
-  id: string;
-  plantel_id: string;
-  docente_id: string;
-  materia_id: string;
-  created_at: string;
-}
-
-// Fila enriquecida con el nombre de docente/materia, usada en la pantalla de
-// gestión de asignaciones (`/plantel/asignaciones`) — mismo criterio que
-// `SolicitudArcoConSolicitante` en Identidad/Roles.
-export interface AsignacionDocenteMateria extends DocenteMateria {
-  docenteNombre: string;
-  materiaNombre: string;
 }
 
 // Escala 0-10 (estándar del sistema educativo mexicano); 6 es la mínima

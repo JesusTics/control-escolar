@@ -1,6 +1,6 @@
 // Caso de uso: listar los perfiles con rol `docente` del plantel del usuario
-// actual — usado por `/plantel/asignaciones` para ofrecer el selector de
-// docente al crear una asignación docente<->materia.
+// actual — usado por `/plantel/grupos` (y `/plantel/grupos/[id]`) para
+// ofrecer el selector de docente al crear un grupo o cambiar su titular.
 //
 // Sin RLS nueva: la política `perfiles_select_mismo_plantel` (ver
 // supabase/migrations/20260822213647_perfiles_visibles_mismo_plantel.sql) ya

@@ -1,6 +1,7 @@
 // Tipos y lógica de dominio del bounded context Asistencia.
 // Reflejan la forma de la tabla `public.asistencias` definida en
-// `supabase/migrations/20260822190214_asistencia_diaria.sql`.
+// `supabase/migrations/20260822190214_asistencia_diaria.sql` y actualizada
+// en `supabase/migrations/20260823003336_asistencia_por_grupo.sql`.
 //
 // Sin dependencias de Supabase ni de red — testeable en aislamiento total
 // (ver tests/dominio/asistencia.test.ts). Aplica hexagonal ligero aquí
@@ -14,10 +15,15 @@ export type EstadoAsistencia =
   | "retardo"
   | "justificado";
 
+// Desde 20260823003336_asistencia_por_grupo.sql: la asistencia se toma por
+// sesión de grupo, no de forma general del plantel — un alumno puede tener
+// asistencia distinta en dos materias el mismo día (`unique(alumno_id,
+// grupo_id, fecha)` en vez de `unique(alumno_id, fecha)`).
 export interface Asistencia {
   id: string;
   plantel_id: string;
   alumno_id: string;
+  grupo_id: string;
   fecha: string;
   estado: EstadoAsistencia;
   created_at: string;

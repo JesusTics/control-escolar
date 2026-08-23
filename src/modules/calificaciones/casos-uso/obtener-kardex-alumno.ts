@@ -13,7 +13,8 @@ import type { Rol } from "@/modules/identidad/dominio/perfil";
 
 export interface CalificacionKardex {
   id: string;
-  materiaId: string;
+  grupoId: string;
+  grupoNombre: string;
   materiaNombre: string;
   periodo: string;
   calificacion: number;
@@ -55,12 +56,15 @@ const ROLES_CON_ACCESO_A_DATOS_SENSIBLES: ReadonlySet<Rol> = new Set([
   "oficina_central",
 ]);
 
-interface FilaCalificacionConMateria {
+interface FilaCalificacionConGrupo {
   id: string;
-  materia_id: string;
-  periodo: string;
+  grupo_id: string;
   calificacion: number;
-  materia: { nombre: string } | null;
+  grupo: {
+    nombre: string;
+    periodo: string;
+    materia: { nombre: string } | null;
+  } | null;
 }
 
 export async function obtenerKardexAlumno(
@@ -82,23 +86,31 @@ export async function obtenerKardexAlumno(
     return { exito: false, error: "No se encontró el alumno." };
   }
 
+  // Sin `order` sobre `periodo` a nivel de consulta: esa columna ahora vive
+  // en `grupos` (tabla anidada), no directamente en `calificaciones` — se
+  // ordena por fecha de captura en la base y, si hace falta un orden visual
+  // por periodo, se resuelve en la UI. Ver
+  // supabase/migrations/20260823003332_calificaciones_por_grupo.sql.
   const { data: filas, error: errorCalificaciones } = await supabase
     .from("calificaciones")
-    .select("id, materia_id, periodo, calificacion, materia:materias(nombre)")
+    .select(
+      "id, grupo_id, calificacion, grupo:grupos(nombre, periodo, materia:materias(nombre))",
+    )
     .eq("alumno_id", alumnoId)
-    .order("periodo", { ascending: false });
+    .order("created_at", { ascending: false });
 
   if (errorCalificaciones) {
     return { exito: false, error: errorCalificaciones.message };
   }
 
   const calificaciones: CalificacionKardex[] = (
-    filas as unknown as FilaCalificacionConMateria[]
+    filas as unknown as FilaCalificacionConGrupo[]
   ).map((fila) => ({
     id: fila.id,
-    materiaId: fila.materia_id,
-    materiaNombre: fila.materia?.nombre ?? "Materia desconocida",
-    periodo: fila.periodo,
+    grupoId: fila.grupo_id,
+    grupoNombre: fila.grupo?.nombre ?? "Grupo desconocido",
+    materiaNombre: fila.grupo?.materia?.nombre ?? "Materia desconocida",
+    periodo: fila.grupo?.periodo ?? "—",
     calificacion: fila.calificacion,
     aprobado: estaAprobado(fila.calificacion),
   }));

@@ -127,18 +127,145 @@ uso nuevos la usan:
   portal de alumno en `/dashboard` para resolver directamente SU propio
   expediente, sin pasar por el listado general.
 
+### Grupos
+
+Bounded context nuevo (Oleada 2, "horarios/carga académica" acotado a su
+mínimo — CLAUDE.md sección 8). Reemplaza el modelo anterior (calificaciones
+y asistencia directas por alumno/materia/periodo o por alumno/día general)
+por el modelo real que el usuario validó tras una plática de alcance: un
+**grupo** es una instancia concreta de una materia impartida por un docente
+en un periodo (ej. "Matemáticas — Grupo A"), estilo universidad — un alumno
+se inscribe individualmente a varios grupos (`inscripciones`), no un solo
+grupo fijo tipo primaria. **Reemplaza por completo el propósito de
+`public.docente_materias`** (asignación docente<->materia general,
+introducida y retirada en la misma sesión que este bounded context): la
+asignación docente<->calificación/asistencia ahora se resuelve vía
+`grupos.docente_id`, más fina que una asignación a la materia completa.
+
+**Casos de uso** (`src/modules/grupos/casos-uso/`): `crear-grupo` (staff;
+traduce 42501 y la violación de `unique(materia_id, nombre, periodo)` a
+mensaje de negocio, mismo criterio que `crear-materia.ts`),
+`listar-grupos-plantel` (staff; todos los grupos del plantel, con nombre de
+materia/docente vía `select` anidado), `listar-mis-grupos` (docente; **con
+filtro explícito** `eq('docente_id', user.id)` en la consulta — a diferencia
+de `listar-materias.ts`/el antiguo `listar-mis-materias-asignadas.ts`, la
+política `grupos_select_mismo_plantel` NO acota por rol, deja ver todos los
+grupos del plantel a cualquier usuario autenticado, así que aquí sí hace
+falta filtrar en la aplicación, documentado a propósito en el código para no
+asumir que RLS ya lo hace), `asignar-docente-grupo` (staff; UPDATE de
+`grupos.docente_id`, acepta `null` para dejar el grupo sin titular),
+`inscribir-alumno-grupo` / `desinscribir-alumno-grupo` (staff; INSERT/DELETE
+en `inscripciones`, mismo criterio de traducción de errores que
+`crear-invitacion.ts`), `listar-inscripciones-grupo` (staff, y el docente
+titular del grupo vía RLS; alumnos inscritos en un grupo específico, usado
+tanto por `/plantel/grupos/[id]` como para poblar la lista de captura de
+asistencia), `listar-grupos-de-alumno` (grupos en los que está inscrito un
+alumno específico — ver decisión de diseño abajo).
+
+**Decisión de diseño clave — `listar-grupos-de-alumno` resuelve la
+intersección "grupos del alumno ∩ grupos del docente" sin lógica de
+aplicación extra**: la política RLS `inscripciones_select_propia_o_staff_o_
+docente` ya acota qué inscripciones puede ver cada rol. Cuando un perfil
+`docente` invoca este caso de uso, RLS solo deja ver las inscripciones de
+grupos donde ese docente es `grupos.docente_id` — el resultado YA ES la
+intersección pedida por la tarea (los grupos del alumno en los que además
+el docente es titular), sin duplicar esa condición en el código. Staff ve
+todos los grupos del alumno sin restricción (RLS lo permite). Usado por
+`/alumnos/[id]/calificaciones/nueva` para el selector de "grupo" al
+registrar una calificación.
+
+**Lógica de negocio no trivial que justifica hexagonal ligero aquí**
+(CLAUDE.md 4.1): la integridad inscripción<->calificación/asistencia — un
+alumno no puede recibir una calificación ni un registro de asistencia en un
+grupo en el que no está inscrito, exigido a nivel de RLS (ver políticas de
+`calificaciones`/`asistencias` más abajo), no solo de aplicación.
+
+**Tablas `public.grupos` / `public.inscripciones`**, definidas en
+`supabase/migrations/20260823003328_grupos_e_inscripciones.sql` —
+**pendiente de aplicar manualmente en el SQL Editor de Supabase**, igual que
+el resto de migraciones del proyecto.
+
+`public.grupos`:
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_grupos_plantel_id`) |
+| `materia_id` | `uuid` | `not null`, referencia `materias(id)`. Indexado (`idx_grupos_materia_id`) |
+| `docente_id` | `uuid` | Opcional, referencia `perfiles(id)`. Indexado (`idx_grupos_docente_id`) — `null` mientras el grupo no tenga titular |
+| `nombre` | `text` | Obligatorio (ej. "Grupo A") |
+| `periodo` | `text` | Obligatorio, texto libre (ej. "2026-1"), mismo criterio que el `periodo` que antes vivía directo en `calificaciones` |
+| `created_at` | `timestamptz` | Default `now()` |
+
+Restricción `unique(materia_id, nombre, periodo)` — no puede haber dos
+grupos con el mismo nombre para la misma materia y periodo.
+
+`public.inscripciones`:
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_inscripciones_plantel_id`) |
+| `alumno_id` | `uuid` | `not null`, referencia `alumnos(id)`. Indexado (`idx_inscripciones_alumno_id`) |
+| `grupo_id` | `uuid` | `not null`, referencia `grupos(id)`. Indexado (`idx_inscripciones_grupo_id`) |
+| `created_at` | `timestamptz` | Default `now()` |
+
+Restricción `unique(alumno_id, grupo_id)` — un alumno no puede inscribirse
+dos veces al mismo grupo.
+
+RLS habilitada en ambas tablas.
+
+- `grupos_select_mismo_plantel`: cualquier usuario autenticado del plantel
+  ve todos los grupos (sin restricción por rol/titularidad — ver nota en
+  `listar-mis-grupos` arriba sobre por qué eso importa).
+- `grupos_insert_staff` / `grupos_update_staff`: solo
+  `administrativo`/`oficina_central` del mismo plantel puede crear grupos o
+  cambiar su titular — un docente no puede auto-asignarse un grupo.
+- `inscripciones_select_propia_o_staff_o_docente`: el propio alumno ve sus
+  inscripciones (`alumnos.perfil_id = auth.uid()`); staff ve todas las del
+  plantel; un docente ve solo las inscripciones de grupos donde es
+  `grupos.docente_id` — es la condición que habilita la intersección
+  automática descrita arriba.
+- `inscripciones_insert_staff` / `inscripciones_delete_staff`: solo staff
+  puede inscribir/desinscribir alumnos.
+
+**UI**: `/plantel/grupos` (protegida, solo staff, mismo criterio de "no
+tienes permiso" que `/plantel/invitaciones`): formulario de alta (materia +
+nombre + periodo + docente opcional) y, debajo, la lista de grupos del
+plantel con un enlace "Gestionar inscripciones" por fila hacia
+`/plantel/grupos/[id]`. `/plantel/grupos/[id]` (protegida, mismo criterio):
+nombre del grupo, selector para cambiar/asignar el docente titular, lista de
+alumnos inscritos con botón "Desinscribir" por fila (sin diálogo de
+confirmación bloqueante, CLAUDE.md 7 — desinscribir es reversible y no borra
+el historial de calificaciones/asistencia del alumno en ese grupo, ver
+comentario en `desinscribir-alumno-grupo.ts`), y un formulario para inscribir
+un alumno más (selector de alumnos del plantel que todavía no están en ese
+grupo, calculado en la página restando `listar-inscripciones-grupo` de
+`listar-alumnos`).
+
+**Cubierta desde el primer commit** por `tests/aislamiento-grupos.test.ts`
+(CLAUDE.md 4.3) — reemplaza a `tests/aislamiento-docente-materias.test.ts`
+(retirado junto con `docente_materias`), migrando la misma intención de
+aislamiento **dentro** del mismo tenant al nuevo esquema: un docente titular
+de un grupo puede calificar/tomar asistencia de alumnos inscritos en ESE
+grupo; el mismo docente NO puede hacerlo en un grupo donde no es titular
+(aunque el alumno sí esté inscrito ahí, para aislar ambas causas); un alumno
+NO inscrito en un grupo no puede recibir calificación ni asistencia en él
+(validación de integridad, rechazada incluso para staff); y staff sigue con
+visibilidad/escritura completa, solo sujeto a esa misma validación de
+integridad. Usa la misma cuenta de docente de prueba que el archivo
+retirado (`test-docente-materias@controlescolar.test`) para no crear una
+cuenta nueva en el proyecto de desarrollo.
+
 ### Calificaciones
 
 Alcance actual (mínimo): catálogo de materias por plantel, registro (y
-corrección) de calificaciones por alumno/materia/periodo, kardex de un
-alumno con promedio general, y **asignación docente<->materia** (ver más
-abajo, "Asignación docente<->materia"). Explícitamente fuera de este
-alcance (ver instrucciones de la sesión): edición/borrado de calificaciones
-más allá de re-registrar (upsert), boletas/reportes en PDF, gestión de
-periodos escolares como catálogo propio (`periodo` es texto libre, ej.
-"2026-1"), y asignación docente<->**grupo** (no existe todavía el concepto
-de "grupos" de alumnos en el modelo de datos — la asignación docente<->
-materia sí está resuelta).
+corrección) de calificaciones por alumno/**grupo** (el grupo ya trae materia
+y periodo, ver bounded context "Grupos" arriba), kardex de un alumno con
+promedio general. Explícitamente fuera de este alcance: edición/borrado de
+calificaciones más allá de re-registrar (upsert), boletas/reportes en PDF, y
+gestión de periodos escolares como catálogo propio (`periodo` es texto
+libre, ej. "2026-1", y vive en `grupos`, no en `calificaciones`).
 
 **Casos de uso** (`src/modules/calificaciones/casos-uso/`): `crear-materia`,
 `listar-materias`, `registrar-calificacion`, `obtener-kardex-alumno`. Mismo
@@ -155,164 +282,118 @@ aislamiento total, cubierta por `tests/dominio/calificaciones.test.ts`
 (TDD-lite en lógica crítica, CLAUDE.md sección 5).
 
 **Decisión de diseño — upsert en vez de insert**: `registrar-calificacion`
-usa `.upsert()` con `onConflict: 'alumno_id,materia_id,periodo'` en vez de
-`.insert()`. Volver a capturar la misma materia/periodo para un alumno
-actualiza la calificación existente en vez de fallar por violación de
-unicidad — es el comportamiento esperado cuando un docente corrige una nota
-ya capturada, y es explícitamente la única forma de "editar" en este alcance
-(no hay un caso de uso de edición/borrado separado).
+usa `.upsert()` con `onConflict: 'alumno_id,grupo_id'` en vez de
+`.insert()`. Volver a capturar el mismo grupo para un alumno actualiza la
+calificación existente en vez de fallar por violación de unicidad — es el
+comportamiento esperado cuando un docente corrige una nota ya capturada, y
+es explícitamente la única forma de "editar" en este alcance (no hay un
+caso de uso de edición/borrado separado).
 
 **Kardex**: `obtener-kardex-alumno` trae el alumno, sus calificaciones (con
-el nombre de materia vía `select` anidado de Supabase,
-`materia:materias(nombre)`), el promedio general (`calcularPromedio` sobre
-todas las calificaciones del alumno) y si está aprobado en cada materia
-(`estaAprobado` aplicado a la calificación individual — no hay promedio por
-materia todavía, es una sola calificación por materia/periodo).
+el nombre de grupo/periodo/materia vía `select` anidado de Supabase,
+`grupo:grupos(nombre, periodo, materia:materias(nombre))` — el join ahora
+pasa por `grupo_id -> grupos -> materias` en vez de columnas directas), el
+promedio general (`calcularPromedio` sobre todas las calificaciones del
+alumno) y si está aprobado en cada una (`estaAprobado` aplicado a la
+calificación individual — no hay promedio por materia todavía, es una sola
+calificación por grupo).
 
-**Asignación docente<->materia** — cierra el hueco de mínimo privilegio
-documentado desde `20260822200144_endurecer_rls_visibilidad_por_rol.sql`
-("`docente` mantiene deliberadamente visibilidad de TODO el plantel — no
-existe todavía asignación de materias/grupos a un docente específico"):
-hasta esta sesión, cualquier perfil con rol `docente` podía ver y calificar
-CUALQUIER materia de su plantel (un docente de Matemáticas podía calificar
-Historia sin restricción). Alcance explícito: solo docente<->**materia**,
-NO docente<->**grupo** — no existe todavía el concepto de "grupos" de
-alumnos en el modelo de datos (los alumnos no están agrupados en
-clases/secciones). `asistencias` queda **fuera** de esta restricción a
-propósito: es diaria y general del plantel, no por materia/clase (decisión
-ya tomada, ver sección "Asistencia" arriba) — cualquier staff/docente sigue
-pudiendo tomar asistencia general como hasta ahora.
-
-**Tabla `public.docente_materias`**, definida en
-`supabase/migrations/20260823000049_asignacion_docente_materia.sql` —
-**pendiente de aplicar manualmente en el SQL Editor de Supabase**, igual que
-el resto de migraciones del proyecto.
+**Tabla `public.calificaciones`**, definida originalmente en
+`supabase/migrations/20260822184856_calificaciones_registro_y_kardex.sql` y
+migrada al esquema por grupo en
+`supabase/migrations/20260823003332_calificaciones_por_grupo.sql` —
+**pendiente de aplicar manualmente en el SQL Editor de Supabase**. Esa
+migración **borra las filas existentes** de la tabla antes de aplicar el
+esquema nuevo (no había forma de resolver retroactivamente a qué grupo
+pertenecía cada calificación vieja) — aceptable porque, al momento de esta
+sesión, esa tabla solo tenía datos de desarrollo/prueba.
 
 | Columna | Tipo | Notas |
 |---|---|---|
 | `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
-| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_docente_materias_plantel_id`) |
-| `docente_id` | `uuid` | `not null`, referencia `perfiles(id)`. Indexado (`idx_docente_materias_docente_id`) |
-| `materia_id` | `uuid` | `not null`, referencia `materias(id)`. Indexado (`idx_docente_materias_materia_id`) |
-| `created_at` | `timestamptz` | Default `now()` |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_calificaciones_plantel_id`) |
+| `alumno_id` | `uuid` | `not null`, referencia `alumnos(id)`. Indexado (`idx_calificaciones_alumno_id`) |
+| `grupo_id` | `uuid` | `not null`, referencia `grupos(id)` — reemplaza a `materia_id`/`periodo` (columnas retiradas) |
+| `calificacion` | `numeric(4,2)` | `not null`, `check` entre 0 y 10 |
+| `created_at` / `updated_at` | `timestamptz` | Default `now()` |
 
-Restricción `unique(docente_id, materia_id)` — un docente no puede tener la
-misma materia asignada dos veces (habilita el mensaje de negocio "Ya existe
-esa asignación" en vez de un error crudo de Postgres, ver
-`asignar-docente-materia.ts`).
+Restricción `calificaciones_alumno_grupo_key` = `unique(alumno_id,
+grupo_id)` — reemplaza a `unique(alumno_id, materia_id, periodo)`, misma
+función: habilita el patrón de `upsert` del caso de uso.
 
-RLS habilitada. Tres políticas, mismo criterio de "solo staff
-asigna/desasigna" que el resto de tablas de gestión del proyecto
-(`invitaciones`, `materias`):
+RLS habilitada. Tres políticas — **reemplazadas** (drop + create) en
+`supabase/migrations/20260823003332_calificaciones_por_grupo.sql` (los
+nombres exactos de las políticas que reemplaza, verificados contra
+`supabase/migrations/20260823000049_asignacion_docente_materia.sql`, eran
+`calificaciones_select_propio_o_staff_o_docente_asignado`,
+`calificaciones_insert_staff_o_docente_asignado`,
+`calificaciones_update_staff_o_docente_asignado`):
 
-- `docente_materias_select_propia_o_staff`: el propio docente ve sus
-  asignaciones (`docente_id = auth.uid()`); staff
-  (`administrativo`/`oficina_central`) del mismo plantel ve todas — usado
-  por `listar-mis-materias-asignadas.ts` (docente) y
-  `listar-asignaciones-plantel.ts` (staff) respectivamente.
-- `docente_materias_insert_staff` / `docente_materias_delete_staff`: solo
-  staff del mismo plantel puede asignar/desasignar — un docente no puede
-  auto-asignarse una materia. Sin política de `UPDATE`: una asignación es
-  un vínculo binario vigente/no vigente sin campos editables, se
-  quita/vuelve a crear en vez de editarse (`desasignar-docente-materia.ts`
-  usa un `DELETE` real, a diferencia del patrón de upsert de
-  `calificaciones`/`asistencias` — aquí sí tiene sentido porque no hay
-  historial que preservar).
+- `calificaciones_select_propia_o_staff_o_docente_grupo`: dentro del
+  plantel, `administrativo`/`oficina_central` siguen viendo todas las
+  calificaciones del plantel (sin cambio); un perfil con rol `alumno` solo
+  ve las calificaciones cuyo `alumno_id` corresponde al alumno vinculado a
+  su propio perfil (sin cambio); un perfil con rol `docente` ve **solo** las
+  calificaciones de grupos donde es `grupos.docente_id` — reemplaza la
+  condición anterior (`docente_materias`), ahora acotada al grupo concreto,
+  no a la materia completa.
+- `calificaciones_insert_staff_o_docente_grupo` /
+  `calificaciones_update_staff_o_docente_grupo`: **exigen además, para
+  CUALQUIER rol (incluido staff)**, que el alumno esté inscrito en el grupo
+  (`exists (select 1 from inscripciones i where i.alumno_id =
+  calificaciones.alumno_id and i.grupo_id = calificaciones.grupo_id)`) — es
+  la validación de integridad nueva descrita en el bounded context "Grupos".
+  Además de eso, staff sigue pudiendo insertar/actualizar cualquier
+  calificación del plantel (sin cambio de rol); `docente` solo puede
+  hacerlo en un grupo donde es `grupos.docente_id`.
 
-**Políticas de `calificaciones` reemplazadas** (drop + create de las tres
-políticas de `20260822184856_calificaciones_registro_y_kardex.sql`/
-`20260822200144_endurecer_rls_visibilidad_por_rol.sql`, mismo archivo de
-migración que crea `docente_materias`):
+`/alumnos/[id]/calificaciones/nueva` ya no filtra el selector de "materia"
+sino que muestra los **grupos** en los que el alumno específico está
+inscrito (`listar-grupos-de-alumno`, ver bounded context "Grupos" — para un
+docente, el resultado YA ES la intersección grupos-del-alumno ∩
+grupos-del-docente, sin lógica adicional en la página). Si el alumno no está
+inscrito en ningún grupo (o, para un docente, en ninguno de los suyos), se
+muestra un mensaje explícito invitando a inscribirlo primero desde
+`/plantel/grupos`, en vez de un selector vacío confuso.
 
-- `calificaciones_select_propio_o_staff_o_docente_asignado` (reemplaza a
-  `calificaciones_select_propio_o_staff`): alumno ve lo propio, staff ve
-  todo el plantel (sin cambio en ambos casos) y `docente` ve **solo** las
-  calificaciones de materias que tiene asignadas en `docente_materias` — ya
-  no ve todo el plantel.
-- `calificaciones_insert_staff_o_docente_asignado` (reemplaza a
-  `calificaciones_insert_staff_mismo_plantel`) /
-  `calificaciones_update_staff_o_docente_asignado` (reemplaza a
-  `calificaciones_update_staff_mismo_plantel`): staff sigue pudiendo
-  insertar/actualizar cualquier calificación del plantel (sin cambio);
-  `docente` solo puede insertar/actualizar calificaciones de una materia que
-  tenga asignada — antes podía hacerlo en cualquier materia del plantel.
-
-**Casos de uso** (`src/modules/calificaciones/casos-uso/`):
-`asignar-docente-materia` (staff; traduce 42501 y la violación de
-`unique(docente_id, materia_id)` a mensaje de negocio, mismo criterio que
-`crear-invitacion.ts`), `desasignar-docente-materia` (staff; `DELETE` real,
-ver arriba), `listar-asignaciones-plantel` (staff; trae todas las del
-plantel con `docente:perfiles(nombre_completo)`/`materia:materias(nombre)`
-vía `select` anidado, mismo patrón que `listar-solicitudes-arco-
-plantel.ts`), `listar-mis-materias-asignadas` (docente; sin filtro
-explícito de `docente_id` en la consulta — confía en que RLS ya acota el
-resultado, mismo criterio que `listar-materias.ts`). `listar-docentes-
-plantel` (en `src/modules/identidad/casos-uso/`, no en Calificaciones — es
-sobre `perfiles`, no sobre una tabla de este bounded context; perfiles con
-`rol = 'docente'` del plantel actual, sin RLS nueva: reusa
-`perfiles_select_mismo_plantel`, mismo criterio que
-`listar-alumnos-sin-vincular.ts`).
-
-**UI**: `/plantel/asignaciones` (protegida, solo staff, mismo criterio de
-"no tienes permiso" que `/plantel/invitaciones`): formulario de alta
-(selector de docente + selector de materia) y, debajo, la lista de
-asignaciones existentes con un botón "Quitar" por fila
-(`src/app/plantel/asignaciones/fila-asignacion.tsx`, mismo patrón de
-`useActionState` por fila que `resolverSolicitudArcoAction` en Solicitudes
-ARCO). Si no hay docentes en el plantel todavía, mensaje explícito con
-enlace a `/plantel/invitaciones` en vez de un formulario con un selector de
-docente vacío y confuso. Sin diálogo de confirmación bloqueante al quitar
-una asignación (CLAUDE.md 7) — es una acción de bajo riesgo y reversible
-(se puede volver a asignar de inmediato).
-
-`/alumnos/[id]/calificaciones/nueva` filtra el selector de materia según el
-rol del usuario actual (resuelto vía `obtener-perfil-actual`, mismo criterio
-que el resto del proyecto): staff ve `listar-materias` (todas, sin cambio);
-`docente` ve `listar-mis-materias-asignadas` (solo las suyas). Si un docente
-sin materias asignadas llega a esta pantalla, se muestra un mensaje
-explícito invitando a contactar al staff, en vez de un selector vacío
-confuso — mismo criterio que "sin materias en el plantel" para staff.
-
-`registrar-calificacion.ts` traduce el 42501 crudo de RLS (rechazo de
-`calificaciones_insert/update_staff_o_docente_asignado` cuando un docente
-intenta calificar una materia no asignada — ej. por una petición directa que
-se salta el filtro de la UI) al mensaje de negocio "No tienes esta materia
-asignada", en vez de dejarlo pasar tal cual.
+`registrar-calificacion.ts` traduce el 42501 crudo de RLS a uno de dos
+mensajes de negocio distintos, aunque Postgres solo devuelve un único código
+para ambas causas (viven en el mismo `WITH CHECK`): si el usuario es
+`docente` y no es el titular del grupo (`grupos.docente_id`, consultado
+aparte — visible para cualquiera del plantel vía `grupos_select_mismo_
+plantel`, sin restricción de rol), el mensaje es "No tienes este grupo
+asignado"; en cualquier otro caso (staff, o docente titular pero alumno no
+inscrito), el mensaje es "Este alumno no está inscrito en este grupo".
 
 **Cubierta desde el primer commit** por
-`tests/aislamiento-docente-materias.test.ts` (CLAUDE.md 4.3): un docente sin
-asignación no ve ni puede insertar calificaciones de una materia ajena; un
-docente con asignación sí puede en su materia pero sigue sin poder en una
-materia distinta no asignada; staff sigue viendo/calificando todas las
-materias del plantel sin restricción. Usa una cuenta de docente propia de
-este archivo (`test-docente-materias@controlescolar.test`, distinta de
-`test-invitado@controlescolar.test` en `aislamiento-invitaciones.test.ts`)
-para no competir por la misma invitación entre archivos que corren en
-workers independientes de Vitest.
+`tests/aislamiento-calificaciones.test.ts` (CLAUDE.md 4.3) — ver/no-ver
+materia y calificación ajenas, spoofing de `plantel_id` rechazado por RLS,
+migrado al esquema por grupo (crea un grupo y una inscripción antes de
+registrar la calificación de prueba). El aislamiento por titularidad
+docente<->grupo específicamente vive en `tests/aislamiento-grupos.test.ts`
+(ver bounded context "Grupos" arriba).
 
 ### Asistencia
 
-Alcance actual (mínimo): asistencia diaria general del plantel — **un
-registro por alumno por día**, no por materia/clase individual. Es una
-simplificación consciente y razonable para el MVP, igual que en primaria/
-secundaria mexicana se toma lista una vez al día (ver alcance explícito de
-la sesión). Explícitamente fuera de este alcance: asistencia por materia,
-reportes de tendencias, y notificaciones automáticas a padres por
-inasistencia (eso corresponde al módulo Comunicación, todavía no
-implementado).
+Alcance actual (mínimo): asistencia **por sesión de grupo** — un alumno
+puede tener asistencia distinta en dos materias el mismo día (antes era
+diaria y general del plantel, un solo registro por alumno/día; ese modelo
+se reemplazó junto con el bounded context "Grupos", ver arriba). Explícitamente
+fuera de este alcance: reportes de tendencias, y notificaciones automáticas
+a padres por inasistencia (eso corresponde al módulo Comunicación, todavía
+no implementado).
 
 **Casos de uso** (`src/modules/asistencia/casos-uso/`):
-`registrar-asistencia-del-dia`, `obtener-asistencia-alumno`,
-`listar-alumnos-para-captura`. Mismo patrón de cliente de Supabase inyectado
-que Alumnos/Calificaciones/Identidad. Se aplica hexagonal ligero aquí de
-forma explícita — CLAUDE.md 4.1 usa Asistencia, junto con Calificaciones e
-Identidad/Roles, como ejemplo textual de "lógica de negocio no trivial".
+`registrar-asistencia-del-dia`, `obtener-asistencia-alumno`. Mismo patrón de
+cliente de Supabase inyectado que Alumnos/Calificaciones/Identidad. Se
+aplica hexagonal ligero aquí de forma explícita — CLAUDE.md 4.1 usa
+Asistencia, junto con Calificaciones e Identidad/Roles, como ejemplo
+textual de "lógica de negocio no trivial".
 
-`listar-alumnos-para-captura` filtra explícitamente por `estado = 'activo'`
-en vez de reusar `listar-alumnos` (que lista todos los alumnos sin importar
-estado, para el directorio general) — no tiene sentido tomar asistencia de
-un alumno dado de baja, y ese filtro es una regla propia de este caso de
-uso, no del listado general de Alumnos.
+**Retirado en esta sesión**: `listar-alumnos-para-captura.ts` (listaba
+TODOS los alumnos activos del plantel para la captura general) — la lista de
+alumnos a capturar ahora viene de `listar-inscripciones-grupo.ts` (módulo
+Grupos), acotada al grupo elegido, no al plantel completo.
 
 **Lógica de dominio pura** (`src/modules/asistencia/dominio/asistencia.ts`):
 `calcularPorcentajeAsistencia(registros)`. Regla de negocio no obvia,
@@ -324,56 +405,80 @@ del alumno, pero tampoco equivale a haber asistido. Devuelve `null` si no
 hay registros no-justificados, nunca divide entre cero (mismo criterio que
 `calcularPromedio` en Calificaciones). Sin dependencias de Supabase ni de
 red — testeable en aislamiento total, cubierta por
-`tests/dominio/asistencia.test.ts`.
+`tests/dominio/asistencia.test.ts`. **Sin cambios en esta sesión**:
+`obtener-asistencia-alumno` sigue calculando el porcentaje sobre TODOS los
+registros de asistencia del alumno, combinados a través de todos sus
+grupos — decisión explícita de alcance para no complicar el kardex con un
+desglose por grupo todavía.
 
 **Decisión de diseño — upsert masivo en vez de insert por alumno**:
-`registrar-asistencia-del-dia` recibe el arreglo completo de
-`{alumno_id, estado}` de un día y hace un solo `.upsert()` con
-`onConflict: 'alumno_id,fecha'` — una sola llamada de red para toda la lista,
-no una petición por alumno (CLAUDE.md 7 pide explícitamente "modo
-asistido/wizard para... captura masiva"). Volver a capturar la asistencia
-del mismo día para el mismo alumno corrige el registro existente en vez de
-fallar por violación de unicidad, mismo criterio que
-`registrar-calificacion.ts` en Calificaciones — no hay un caso de uso de
-edición/corrección separado, re-capturar ES la forma de corregir.
+`registrar-asistencia-del-dia` recibe el `grupoId`, la `fecha` y el arreglo
+completo de `{alumno_id, estado}` de ese grupo/día, y hace un solo
+`.upsert()` con `onConflict: 'alumno_id,grupo_id,fecha'` — una sola llamada
+de red para toda la lista, no una petición por alumno (CLAUDE.md 7 pide
+explícitamente "modo asistido/wizard para... captura masiva"). Volver a
+capturar la asistencia del mismo grupo/día para el mismo alumno corrige el
+registro existente en vez de fallar por violación de unicidad, mismo
+criterio que `registrar-calificacion.ts` — no hay un caso de uso de
+edición/corrección separado, re-capturar ES la forma de corregir. Los
+`registros` deben venir SOLO de alumnos inscritos en el grupo — la UI lo
+garantiza poblando la lista con `listar-inscripciones-grupo`, y la política
+RLS lo exige también a nivel de base de datos (ver abajo).
 
-**Tabla `public.asistencias`**, definida en
-`supabase/migrations/20260822190214_asistencia_diaria.sql`.
+**Tabla `public.asistencias`**, definida originalmente en
+`supabase/migrations/20260822190214_asistencia_diaria.sql` y migrada al
+esquema por grupo en
+`supabase/migrations/20260823003336_asistencia_por_grupo.sql` — **pendiente
+de aplicar manualmente en el SQL Editor de Supabase**. Esa migración también
+**borra las filas existentes** antes de aplicar el esquema nuevo, mismo
+motivo y mismo criterio de aceptación que en `calificaciones` (solo datos de
+desarrollo/prueba).
 
 | Columna | Tipo | Notas |
 |---|---|---|
 | `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
 | `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_asistencias_plantel_id`) |
 | `alumno_id` | `uuid` | `not null`, referencia `alumnos(id)`. Indexado (`idx_asistencias_alumno_id`) |
+| `grupo_id` | `uuid` | `not null`, referencia `grupos(id)` — columna nueva |
 | `fecha` | `date` | Obligatoria |
 | `estado` | `text` | `not null`, `check` restringido a `presente`/`ausente`/`retardo`/`justificado` |
 | `created_at` / `updated_at` | `timestamptz` | Default `now()` |
 
-Restricción `unique(alumno_id, fecha)` — un solo registro de asistencia por
-alumno/día, es la que habilita el patrón de `upsert` masivo del caso de uso.
+Restricción `asistencias_alumno_grupo_fecha_key` = `unique(alumno_id,
+grupo_id, fecha)` — reemplaza a `unique(alumno_id, fecha)` (nombre real
+verificado antes del `drop constraint`:
+`asistencias_alumno_id_fecha_key`, el default que asigna Postgres a una
+`unique` inline sin nombre explícito). Un alumno puede tener un registro
+por grupo/día en vez de uno solo por día — es lo que habilita asistencia
+distinta en dos materias el mismo día.
 
-RLS habilitada. Tres políticas, mismo criterio de roles que
-`calificaciones` (incluye `docente` en `INSERT`/`UPDATE` porque tomar
-asistencia es tarea docente en la vida real, aunque hoy no exista todavía un
-flujo de alta de usuarios con ese rol):
+RLS habilitada. Tres políticas — **reemplazadas** (drop + create) en
+`supabase/migrations/20260823003336_asistencia_por_grupo.sql` (nombres
+exactos de las políticas que reemplaza, verificados contra
+`supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`:
+`asistencias_select_propio_o_staff`, `asistencias_insert_staff_mismo_
+plantel`, `asistencias_update_staff_mismo_plantel`):
 
-- `asistencias_select_propio_o_staff` (reemplaza a
-  `asistencias_select_mismo_plantel` desde
-  `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`,
-  mismo criterio exacto que `calificaciones_select_propio_o_staff`):
-  `administrativo`/`oficina_central`/`docente` ven toda la asistencia del
-  plantel (sin cambio); un perfil con rol `alumno` solo ve los registros del
-  alumno vinculado a su propio perfil.
-- `asistencias_insert_staff_mismo_plantel` /
-  `asistencias_update_staff_mismo_plantel`: solo `administrativo`,
-  `oficina_central` o `docente` del mismo plantel. **Sin cambios** en esta
-  sesión.
+- `asistencias_select_propia_o_staff_o_docente_grupo`: dentro del plantel,
+  `administrativo`/`oficina_central` siguen viendo toda la asistencia del
+  plantel (sin cambio); un perfil `alumno` solo ve los registros del alumno
+  vinculado a su propio perfil (sin cambio); un perfil `docente` ve **solo**
+  la asistencia de grupos donde es `grupos.docente_id` — antes veía toda la
+  asistencia del plantel sin restricción (decisión anterior, ya superada).
+- `asistencias_insert_staff_o_docente_grupo` /
+  `asistencias_update_staff_o_docente_grupo`: mismo criterio de integridad
+  que `calificaciones` — exigen que el alumno esté inscrito en el grupo,
+  para CUALQUIER rol incluido staff; además de eso, staff sigue pudiendo
+  insertar/actualizar cualquier registro del plantel, `docente` solo en un
+  grupo donde es titular.
 
 **Cubierta desde el primer commit** por `tests/aislamiento-asistencia.test.ts`
 (CLAUDE.md 4.3) — ver/no-ver registro de asistencia ajeno, spoofing de
-`plantel_id` rechazado por RLS. Usa una fecha fija determinista
-(`2026-01-15`) para que la corrida sea idempotente entre ejecuciones (el
-upsert por `alumno_id,fecha` no duplica filas).
+`plantel_id` rechazado por RLS, migrado al esquema por grupo. Usa una fecha
+fija determinista (`2026-01-15`) para que la corrida sea idempotente entre
+ejecuciones (el upsert por `alumno_id,grupo_id,fecha` no duplica filas). El
+aislamiento por titularidad docente<->grupo específicamente vive en
+`tests/aislamiento-grupos.test.ts`.
 
 ### Comunicación
 
@@ -703,9 +808,10 @@ del suite.
 (`src/app/dashboard/page.tsx`) deja de ser idéntico para todos los roles:
 
 - `administrativo`/`oficina_central`: navegación completa — Alumnos,
-  Materias, Asistencia, Avisos, Invitar usuarios, Asignaciones (docente<->
-  materia, ver sección "Asignación docente<->materia" en "Calificaciones"),
-  Solicitudes ARCO, Derechos ARCO.
+  Materias, Asistencia, Avisos, Invitar usuarios, Grupos (ver sección
+  "Grupos" en Bounded contexts — el enlace de navegación se llamó
+  "Asignaciones" hasta la sesión que introdujo el bounded context Grupos, ver
+  más abajo), Solicitudes ARCO, Derechos ARCO.
 - `docente`: Alumnos (para navegar a kardex y registrar
   calificaciones/asistencia), Asistencia, Avisos — sin Materias (solo staff
   administrativo crea materias) ni Invitar usuarios (solo staff da de alta
@@ -752,11 +858,15 @@ del plantel, no solo las suyas: violaba mínimo privilegio y el principio de
 sesión, visibilidad de TODO el plantel para `calificaciones` — no existía
 todavía asignación de materias/grupos a un docente específico, resolver eso
 quedó fuera de esta sesión. **Actualización (misma fecha, sesión
-posterior)**: para `calificaciones` específicamente, esto se resolvió en
-`supabase/migrations/20260823000049_asignacion_docente_materia.sql` — ver
-sección "Asignación docente<->materia" en "Calificaciones" arriba. Para
-`asistencias` sigue sin cambio a propósito (es diaria y general del
-plantel, no por materia/clase, ver sección "Asistencia").
+posterior)**: para `calificaciones` específicamente, esto se resolvió
+primero con una asignación docente<->materia general
+(`public.docente_materias`), y `asistencias` quedó sin cambio a propósito
+(era diaria y general del plantel, no por materia/clase). **Actualización
+posterior (bounded context Grupos)**: ambas decisiones quedaron superadas —
+`docente_materias` se retiró por completo y tanto `calificaciones` como
+`asistencias` se acotan ahora a `grupos.docente_id`, más fino que una
+materia completa; ver sección "Grupos" en Bounded contexts, arriba, para el
+diseño vigente.
 
 **Aviso de privacidad y derechos ARCO (LFPDPPP, CLAUDE.md 4.4)** — último
 pendiente explícito de cumplimiento que quedaba registrado en
@@ -1002,60 +1112,51 @@ RLS habilitada. Dos políticas:
   no incluye `docente` (dar de alta el catálogo de materias es una tarea
   administrativa, no docente).
 
+### `public.grupos` / `public.inscripciones`
+
+Base del bounded context "Grupos" (ver detalle completo, incluidas las
+políticas RLS y el porqué de cada una, en la sección "Grupos" de Bounded
+contexts, arriba). Definidas en
+`supabase/migrations/20260823003328_grupos_e_inscripciones.sql`.
+`docente_id` en `grupos` es la nueva fuente de verdad de "qué puede
+calificar/tomar asistencia un docente", en reemplazo de la retirada
+`public.docente_materias`
+(`supabase/migrations/20260823003340_retirar_docente_materias.sql`).
+
 ### `public.calificaciones`
 
-Registro de calificaciones por alumno/materia/periodo, definido en
-`supabase/migrations/20260822184856_calificaciones_registro_y_kardex.sql`.
+Registro de calificaciones por alumno/**grupo**, definido originalmente en
+`supabase/migrations/20260822184856_calificaciones_registro_y_kardex.sql` y
+migrado al esquema por grupo en
+`supabase/migrations/20260823003332_calificaciones_por_grupo.sql` (esa
+migración borra las filas existentes antes de aplicar el esquema nuevo —
+solo eran datos de desarrollo/prueba).
 
 | Columna | Tipo | Notas |
 |---|---|---|
 | `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
 | `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_calificaciones_plantel_id`) |
 | `alumno_id` | `uuid` | `not null`, referencia `alumnos(id)`. Indexado (`idx_calificaciones_alumno_id`) |
-| `materia_id` | `uuid` | `not null`, referencia `materias(id)` |
-| `periodo` | `text` | Obligatorio, texto libre (ej. `"2026-1"`) — sin catálogo de periodos en este alcance |
+| `grupo_id` | `uuid` | `not null`, referencia `grupos(id)` — reemplaza a `materia_id`/`periodo` (columnas retiradas) |
 | `calificacion` | `numeric(4,2)` | `not null`, `check` entre 0 y 10 |
 | `created_at` / `updated_at` | `timestamptz` | Default `now()` |
 
-Restricción `unique(alumno_id, materia_id, periodo)` — una sola calificación
-por alumno/materia/periodo, es la que habilita el patrón de `upsert` del caso
-de uso en vez de `insert`.
+Restricción `calificaciones_alumno_grupo_key` = `unique(alumno_id,
+grupo_id)` — una sola calificación por alumno/grupo, es la que habilita el
+patrón de `upsert` del caso de uso en vez de `insert`.
 
 RLS habilitada. Tres políticas — **reemplazadas** (drop + create) en
-`supabase/migrations/20260823000049_asignacion_docente_materia.sql` para
-acotar a `docente` por materia asignada (ver sección "Asignación
-docente<->materia" en Bounded contexts, arriba, para el detalle completo del
-diseño y el porqué):
-
-- `calificaciones_select_propio_o_staff_o_docente_asignado` (reemplaza a
-  `calificaciones_select_propio_o_staff`, que a su vez reemplazó a
-  `calificaciones_select_mismo_plantel` desde
-  `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`):
-  dentro del plantel, `administrativo`/`oficina_central` siguen viendo todas
-  las calificaciones del plantel (sin cambio); un perfil con rol `alumno`
-  solo ve las calificaciones cuyo `alumno_id` corresponde al alumno
-  vinculado a su propio perfil (sin cambio); un perfil con rol `docente`
-  solo ve las calificaciones de materias que tiene asignadas en
-  `public.docente_materias` (`exists (select 1 from docente_materias dm
-  where dm.docente_id = auth.uid() and dm.materia_id =
-  calificaciones.materia_id)`) — **antes veía todas las calificaciones del
-  plantel sin importar la materia**, el hueco de mínimo privilegio cerrado
-  en esta sesión.
-- `calificaciones_insert_staff_o_docente_asignado` (reemplaza a
-  `calificaciones_insert_staff_mismo_plantel`) /
-  `calificaciones_update_staff_o_docente_asignado` (reemplaza a
-  `calificaciones_update_staff_mismo_plantel`): staff sigue pudiendo
-  insertar/actualizar cualquier calificación del plantel (sin cambio);
-  `docente` solo puede insertar/actualizar calificaciones de una materia que
-  tenga asignada en `docente_materias` (misma condición `exists` que el
-  SELECT) — antes podía hacerlo en cualquier materia del plantel.
+`supabase/migrations/20260823003332_calificaciones_por_grupo.sql` para
+acotar a `docente` por titularidad del grupo (`grupos.docente_id`) en vez de
+`docente_materias` (retirada), y para exigir que el alumno esté inscrito en
+el grupo — ver detalle completo del diseño y el porqué en la sección
+"Grupos" de Bounded contexts, arriba, y en la sección "Calificaciones".
 
 **Cubierta desde el primer commit** por
 `tests/aislamiento-calificaciones.test.ts` (CLAUDE.md 4.3) — ver/no-ver
-materia y calificación ajenas, spoofing de `plantel_id` rechazado por RLS —
-y, para la restricción por asignación docente<->materia específicamente, por
-`tests/aislamiento-docente-materias.test.ts` (ver detalle en la sección
-"Asignación docente<->materia" arriba).
+calificación ajena, spoofing de `plantel_id` rechazado por RLS, migrado al
+esquema por grupo — y, para la restricción por titularidad docente<->grupo
+específicamente, por `tests/aislamiento-grupos.test.ts`.
 
 ## Decisiones técnicas
 
@@ -1097,14 +1198,16 @@ cuenta con rol `alumno` no vea las calificaciones/asistencia de otro alumno
 de su propio plantel; cubre también que staff siga viendo todo su plantel
 sin cambios, ver
 supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql),
-`tests/aislamiento-docente-materias.test.ts` (asignación docente<->materia,
-ver sección "Asignación docente<->materia" en "Calificaciones" — otro caso
-de aislamiento **dentro** del mismo tenant: un docente sin asignación no ve
-ni puede insertar calificaciones de una materia ajena, con asignación sí
-puede en la suya pero sigue sin poder en otra, y staff no cambia; usa una
-cuenta de docente propia del archivo,
-`test-docente-materias@controlescolar.test`, distinta de la de
-`aislamiento-invitaciones.test.ts` para no competir entre workers),
+`tests/aislamiento-grupos.test.ts` (titularidad docente<->grupo, ver sección
+"Grupos" en Bounded contexts — reemplaza a `tests/aislamiento-docente-
+materias.test.ts`, retirado junto con `docente_materias`; otro caso de
+aislamiento **dentro** del mismo tenant: un docente titular de un grupo
+puede calificar/tomar asistencia de alumnos inscritos ahí, el mismo docente
+no puede hacerlo en un grupo donde no es titular, un alumno no inscrito no
+puede recibir calificación/asistencia en ningún grupo -ni siquiera vía
+staff-, y staff no cambia; usa la misma cuenta de docente de prueba que el
+archivo retirado, `test-docente-materias@controlescolar.test`, distinta de
+la de `aislamiento-invitaciones.test.ts` para no competir entre workers),
 `tests/helpers/cuenta-prueba.ts` (helper idempotente de alta/login de
 cuentas de prueba, reutilizado sin cambios por todos los archivos —
 `aislamiento-alumnos.test.ts` no lo extendió: siguió el mismo patrón inline

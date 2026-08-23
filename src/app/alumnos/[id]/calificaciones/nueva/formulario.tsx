@@ -2,7 +2,7 @@
 
 import { useActionState } from "react";
 import Link from "next/link";
-import type { Materia } from "@/modules/calificaciones/dominio/calificacion";
+import type { GrupoDeAlumno } from "@/modules/grupos/dominio/grupo";
 import {
   registrarCalificacionAction,
   type EstadoRegistrarCalificacion,
@@ -12,10 +12,10 @@ const estadoInicial: EstadoRegistrarCalificacion = {};
 
 export function FormularioRegistrarCalificacion({
   alumnoId,
-  materias,
+  grupos,
 }: {
   alumnoId: string;
-  materias: Materia[];
+  grupos: GrupoDeAlumno[];
 }) {
   const accionConAlumno = registrarCalificacionAction.bind(null, alumnoId);
   const [estado, accion, enviando] = useActionState(
@@ -26,41 +26,25 @@ export function FormularioRegistrarCalificacion({
   return (
     <form action={accion} className="flex w-full max-w-sm flex-col gap-4">
       <div className="flex flex-col gap-1">
-        <label
-          htmlFor="materiaId"
-          className="text-sm font-medium text-zinc-700"
-        >
-          Materia
+        <label htmlFor="grupoId" className="text-sm font-medium text-zinc-700">
+          Grupo
         </label>
         <select
-          id="materiaId"
-          name="materiaId"
+          id="grupoId"
+          name="grupoId"
           required
           defaultValue=""
           className="h-12 rounded-lg border border-zinc-300 px-4 text-base"
         >
           <option value="" disabled>
-            Selecciona una materia
+            Selecciona un grupo
           </option>
-          {materias.map((materia) => (
-            <option key={materia.id} value={materia.id}>
-              {materia.nombre}
+          {grupos.map((grupo) => (
+            <option key={grupo.grupoId} value={grupo.grupoId}>
+              {grupo.materiaNombre} — {grupo.grupoNombre} ({grupo.periodo})
             </option>
           ))}
         </select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="periodo" className="text-sm font-medium text-zinc-700">
-          Periodo
-        </label>
-        <input
-          id="periodo"
-          name="periodo"
-          type="text"
-          required
-          placeholder="2026-1"
-          className="h-12 rounded-lg border border-zinc-300 px-4 text-base"
-        />
       </div>
       <div className="flex flex-col gap-1">
         <label
