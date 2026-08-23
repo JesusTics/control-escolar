@@ -14,6 +14,14 @@
 //   violación de unicidad — es el comportamiento esperado cuando un docente
 //   corrige una nota ya capturada (ver alcance explícito de la tarea: no hay
 //   edición/borrado separados, re-registrar ES la forma de editar).
+// - Un docente solo puede registrar calificaciones de una materia que tenga
+//   asignada (`public.docente_materias`, ver
+//   supabase/migrations/20260823000049_asignacion_docente_materia.sql) — lo
+//   exigen las políticas RLS `calificaciones_insert/update_staff_o_docente_
+//   asignado`; si de todos modos ocurre (ej. petición directa a una materia
+//   no asignada), el 42501 crudo de Postgres se traduce aquí al mensaje de
+//   negocio "No tienes esta materia asignada" en vez de dejarlo pasar tal
+//   cual, mismo criterio que el resto del proyecto.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Calificacion } from "../dominio/calificacion";
 import { obtenerPerfilActual } from "@/modules/identidad/casos-uso/obtener-perfil-actual";
@@ -86,7 +94,8 @@ export async function registrarCalificacion(
     if (error.code === "42501") {
       return {
         exito: false,
-        error: "No tienes permiso para registrar calificaciones.",
+        error:
+          "No tienes esta materia asignada. Si crees que es un error, contacta al personal administrativo de tu plantel.",
       };
     }
 

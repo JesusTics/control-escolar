@@ -26,6 +26,27 @@ export interface Calificacion {
   updated_at: string;
 }
 
+// Asignación docente <-> materia (`public.docente_materias`, agregada en
+// supabase/migrations/20260823000049_asignacion_docente_materia.sql):
+// cierra el hueco de mínimo privilegio de "cualquier docente puede calificar
+// cualquier materia del plantel". Alcance: docente<->materia únicamente, no
+// docente<->grupo (no existe todavía el concepto de "grupos" de alumnos).
+export interface DocenteMateria {
+  id: string;
+  plantel_id: string;
+  docente_id: string;
+  materia_id: string;
+  created_at: string;
+}
+
+// Fila enriquecida con el nombre de docente/materia, usada en la pantalla de
+// gestión de asignaciones (`/plantel/asignaciones`) — mismo criterio que
+// `SolicitudArcoConSolicitante` en Identidad/Roles.
+export interface AsignacionDocenteMateria extends DocenteMateria {
+  docenteNombre: string;
+  materiaNombre: string;
+}
+
 // Escala 0-10 (estándar del sistema educativo mexicano); 6 es la mínima
 // aprobatoria en la gran mayoría de instituciones tipo TecNM/AMBAR.
 export const NOTA_APROBATORIA = 6;

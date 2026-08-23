@@ -130,13 +130,15 @@ uso nuevos la usan:
 ### Calificaciones
 
 Alcance actual (mínimo): catálogo de materias por plantel, registro (y
-corrección) de calificaciones por alumno/materia/periodo, y kardex de un
-alumno con promedio general. Explícitamente fuera de este alcance (ver
-instrucciones de la sesión): edición/borrado de calificaciones más allá de
-re-registrar (upsert), boletas/reportes en PDF, gestión de periodos
-escolares como catálogo propio (`periodo` es texto libre, ej. "2026-1"), y
-permisos granulares de "solo el docente que imparte la materia puede
-calificarla" (cualquier rol de staff puede, por ahora).
+corrección) de calificaciones por alumno/materia/periodo, kardex de un
+alumno con promedio general, y **asignación docente<->materia** (ver más
+abajo, "Asignación docente<->materia"). Explícitamente fuera de este
+alcance (ver instrucciones de la sesión): edición/borrado de calificaciones
+más allá de re-registrar (upsert), boletas/reportes en PDF, gestión de
+periodos escolares como catálogo propio (`periodo` es texto libre, ej.
+"2026-1"), y asignación docente<->**grupo** (no existe todavía el concepto
+de "grupos" de alumnos en el modelo de datos — la asignación docente<->
+materia sí está resuelta).
 
 **Casos de uso** (`src/modules/calificaciones/casos-uso/`): `crear-materia`,
 `listar-materias`, `registrar-calificacion`, `obtener-kardex-alumno`. Mismo
@@ -166,6 +168,127 @@ el nombre de materia vía `select` anidado de Supabase,
 todas las calificaciones del alumno) y si está aprobado en cada materia
 (`estaAprobado` aplicado a la calificación individual — no hay promedio por
 materia todavía, es una sola calificación por materia/periodo).
+
+**Asignación docente<->materia** — cierra el hueco de mínimo privilegio
+documentado desde `20260822200144_endurecer_rls_visibilidad_por_rol.sql`
+("`docente` mantiene deliberadamente visibilidad de TODO el plantel — no
+existe todavía asignación de materias/grupos a un docente específico"):
+hasta esta sesión, cualquier perfil con rol `docente` podía ver y calificar
+CUALQUIER materia de su plantel (un docente de Matemáticas podía calificar
+Historia sin restricción). Alcance explícito: solo docente<->**materia**,
+NO docente<->**grupo** — no existe todavía el concepto de "grupos" de
+alumnos en el modelo de datos (los alumnos no están agrupados en
+clases/secciones). `asistencias` queda **fuera** de esta restricción a
+propósito: es diaria y general del plantel, no por materia/clase (decisión
+ya tomada, ver sección "Asistencia" arriba) — cualquier staff/docente sigue
+pudiendo tomar asistencia general como hasta ahora.
+
+**Tabla `public.docente_materias`**, definida en
+`supabase/migrations/20260823000049_asignacion_docente_materia.sql` —
+**pendiente de aplicar manualmente en el SQL Editor de Supabase**, igual que
+el resto de migraciones del proyecto.
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `id` | `uuid` (PK) | `gen_random_uuid()` por defecto |
+| `plantel_id` | `uuid` | `not null`, referencia `planteles(id)`. Indexado (`idx_docente_materias_plantel_id`) |
+| `docente_id` | `uuid` | `not null`, referencia `perfiles(id)`. Indexado (`idx_docente_materias_docente_id`) |
+| `materia_id` | `uuid` | `not null`, referencia `materias(id)`. Indexado (`idx_docente_materias_materia_id`) |
+| `created_at` | `timestamptz` | Default `now()` |
+
+Restricción `unique(docente_id, materia_id)` — un docente no puede tener la
+misma materia asignada dos veces (habilita el mensaje de negocio "Ya existe
+esa asignación" en vez de un error crudo de Postgres, ver
+`asignar-docente-materia.ts`).
+
+RLS habilitada. Tres políticas, mismo criterio de "solo staff
+asigna/desasigna" que el resto de tablas de gestión del proyecto
+(`invitaciones`, `materias`):
+
+- `docente_materias_select_propia_o_staff`: el propio docente ve sus
+  asignaciones (`docente_id = auth.uid()`); staff
+  (`administrativo`/`oficina_central`) del mismo plantel ve todas — usado
+  por `listar-mis-materias-asignadas.ts` (docente) y
+  `listar-asignaciones-plantel.ts` (staff) respectivamente.
+- `docente_materias_insert_staff` / `docente_materias_delete_staff`: solo
+  staff del mismo plantel puede asignar/desasignar — un docente no puede
+  auto-asignarse una materia. Sin política de `UPDATE`: una asignación es
+  un vínculo binario vigente/no vigente sin campos editables, se
+  quita/vuelve a crear en vez de editarse (`desasignar-docente-materia.ts`
+  usa un `DELETE` real, a diferencia del patrón de upsert de
+  `calificaciones`/`asistencias` — aquí sí tiene sentido porque no hay
+  historial que preservar).
+
+**Políticas de `calificaciones` reemplazadas** (drop + create de las tres
+políticas de `20260822184856_calificaciones_registro_y_kardex.sql`/
+`20260822200144_endurecer_rls_visibilidad_por_rol.sql`, mismo archivo de
+migración que crea `docente_materias`):
+
+- `calificaciones_select_propio_o_staff_o_docente_asignado` (reemplaza a
+  `calificaciones_select_propio_o_staff`): alumno ve lo propio, staff ve
+  todo el plantel (sin cambio en ambos casos) y `docente` ve **solo** las
+  calificaciones de materias que tiene asignadas en `docente_materias` — ya
+  no ve todo el plantel.
+- `calificaciones_insert_staff_o_docente_asignado` (reemplaza a
+  `calificaciones_insert_staff_mismo_plantel`) /
+  `calificaciones_update_staff_o_docente_asignado` (reemplaza a
+  `calificaciones_update_staff_mismo_plantel`): staff sigue pudiendo
+  insertar/actualizar cualquier calificación del plantel (sin cambio);
+  `docente` solo puede insertar/actualizar calificaciones de una materia que
+  tenga asignada — antes podía hacerlo en cualquier materia del plantel.
+
+**Casos de uso** (`src/modules/calificaciones/casos-uso/`):
+`asignar-docente-materia` (staff; traduce 42501 y la violación de
+`unique(docente_id, materia_id)` a mensaje de negocio, mismo criterio que
+`crear-invitacion.ts`), `desasignar-docente-materia` (staff; `DELETE` real,
+ver arriba), `listar-asignaciones-plantel` (staff; trae todas las del
+plantel con `docente:perfiles(nombre_completo)`/`materia:materias(nombre)`
+vía `select` anidado, mismo patrón que `listar-solicitudes-arco-
+plantel.ts`), `listar-mis-materias-asignadas` (docente; sin filtro
+explícito de `docente_id` en la consulta — confía en que RLS ya acota el
+resultado, mismo criterio que `listar-materias.ts`). `listar-docentes-
+plantel` (en `src/modules/identidad/casos-uso/`, no en Calificaciones — es
+sobre `perfiles`, no sobre una tabla de este bounded context; perfiles con
+`rol = 'docente'` del plantel actual, sin RLS nueva: reusa
+`perfiles_select_mismo_plantel`, mismo criterio que
+`listar-alumnos-sin-vincular.ts`).
+
+**UI**: `/plantel/asignaciones` (protegida, solo staff, mismo criterio de
+"no tienes permiso" que `/plantel/invitaciones`): formulario de alta
+(selector de docente + selector de materia) y, debajo, la lista de
+asignaciones existentes con un botón "Quitar" por fila
+(`src/app/plantel/asignaciones/fila-asignacion.tsx`, mismo patrón de
+`useActionState` por fila que `resolverSolicitudArcoAction` en Solicitudes
+ARCO). Si no hay docentes en el plantel todavía, mensaje explícito con
+enlace a `/plantel/invitaciones` en vez de un formulario con un selector de
+docente vacío y confuso. Sin diálogo de confirmación bloqueante al quitar
+una asignación (CLAUDE.md 7) — es una acción de bajo riesgo y reversible
+(se puede volver a asignar de inmediato).
+
+`/alumnos/[id]/calificaciones/nueva` filtra el selector de materia según el
+rol del usuario actual (resuelto vía `obtener-perfil-actual`, mismo criterio
+que el resto del proyecto): staff ve `listar-materias` (todas, sin cambio);
+`docente` ve `listar-mis-materias-asignadas` (solo las suyas). Si un docente
+sin materias asignadas llega a esta pantalla, se muestra un mensaje
+explícito invitando a contactar al staff, en vez de un selector vacío
+confuso — mismo criterio que "sin materias en el plantel" para staff.
+
+`registrar-calificacion.ts` traduce el 42501 crudo de RLS (rechazo de
+`calificaciones_insert/update_staff_o_docente_asignado` cuando un docente
+intenta calificar una materia no asignada — ej. por una petición directa que
+se salta el filtro de la UI) al mensaje de negocio "No tienes esta materia
+asignada", en vez de dejarlo pasar tal cual.
+
+**Cubierta desde el primer commit** por
+`tests/aislamiento-docente-materias.test.ts` (CLAUDE.md 4.3): un docente sin
+asignación no ve ni puede insertar calificaciones de una materia ajena; un
+docente con asignación sí puede en su materia pero sigue sin poder en una
+materia distinta no asignada; staff sigue viendo/calificando todas las
+materias del plantel sin restricción. Usa una cuenta de docente propia de
+este archivo (`test-docente-materias@controlescolar.test`, distinta de
+`test-invitado@controlescolar.test` en `aislamiento-invitaciones.test.ts`)
+para no competir por la misma invitación entre archivos que corren en
+workers independientes de Vitest.
 
 ### Asistencia
 
@@ -580,7 +703,9 @@ del suite.
 (`src/app/dashboard/page.tsx`) deja de ser idéntico para todos los roles:
 
 - `administrativo`/`oficina_central`: navegación completa — Alumnos,
-  Materias, Asistencia, Avisos, Invitar usuarios.
+  Materias, Asistencia, Avisos, Invitar usuarios, Asignaciones (docente<->
+  materia, ver sección "Asignación docente<->materia" en "Calificaciones"),
+  Solicitudes ARCO, Derechos ARCO.
 - `docente`: Alumnos (para navegar a kardex y registrar
   calificaciones/asistencia), Asistencia, Avisos — sin Materias (solo staff
   administrativo crea materias) ni Invitar usuarios (solo staff da de alta
@@ -623,10 +748,15 @@ módulo, arriba). Antes de esta migración, cualquier cuenta autenticada del
 plantel —incluida una con rol `alumno`, posible desde que existe el sistema
 de invitaciones— veía las calificaciones y asistencia de TODOS los alumnos
 del plantel, no solo las suyas: violaba mínimo privilegio y el principio de
-"interés superior del menor" (CLAUDE.md 4.4). `docente` mantiene
-deliberadamente visibilidad de TODO el plantel — no existe todavía
-asignación de materias/grupos a un docente específico, resolver eso queda
-fuera de esta sesión.
+"interés superior del menor" (CLAUDE.md 4.4). `docente` mantuvo, en esta
+sesión, visibilidad de TODO el plantel para `calificaciones` — no existía
+todavía asignación de materias/grupos a un docente específico, resolver eso
+quedó fuera de esta sesión. **Actualización (misma fecha, sesión
+posterior)**: para `calificaciones` específicamente, esto se resolvió en
+`supabase/migrations/20260823000049_asignacion_docente_materia.sql` — ver
+sección "Asignación docente<->materia" en "Calificaciones" arriba. Para
+`asistencias` sigue sin cambio a propósito (es diaria y general del
+plantel, no por materia/clase, ver sección "Asistencia").
 
 **Aviso de privacidad y derechos ARCO (LFPDPPP, CLAUDE.md 4.4)** — último
 pendiente explícito de cumplimiento que quedaba registrado en
@@ -891,29 +1021,41 @@ Restricción `unique(alumno_id, materia_id, periodo)` — una sola calificación
 por alumno/materia/periodo, es la que habilita el patrón de `upsert` del caso
 de uso en vez de `insert`.
 
-RLS habilitada. Tres políticas:
+RLS habilitada. Tres políticas — **reemplazadas** (drop + create) en
+`supabase/migrations/20260823000049_asignacion_docente_materia.sql` para
+acotar a `docente` por materia asignada (ver sección "Asignación
+docente<->materia" en Bounded contexts, arriba, para el detalle completo del
+diseño y el porqué):
 
-- `calificaciones_select_propio_o_staff` (reemplaza a
+- `calificaciones_select_propio_o_staff_o_docente_asignado` (reemplaza a
+  `calificaciones_select_propio_o_staff`, que a su vez reemplazó a
   `calificaciones_select_mismo_plantel` desde
   `supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql`):
-  dentro del plantel, `administrativo`/`oficina_central`/`docente` siguen
-  viendo todas las calificaciones del plantel (sin cambio); un perfil con rol
-  `alumno` solo ve las calificaciones cuyo `alumno_id` corresponde al alumno
-  vinculado a su propio perfil (`exists (select 1 from alumnos a where a.id =
-  calificaciones.alumno_id and a.perfil_id = auth.uid())`) — antes veía las
-  calificaciones de TODOS los alumnos del plantel.
-- `calificaciones_insert_staff_mismo_plantel` /
-  `calificaciones_update_staff_mismo_plantel`: a diferencia de `alumnos` y
-  `materias`, incluyen el rol `docente` además de `administrativo` y
-  `oficina_central` — calificar es tarea docente en la vida real, aunque hoy
-  no exista todavía un flujo de alta de usuarios con ese rol. Se deja la
-  política lista porque no tiene costo adicional definirla junto con la
-  tabla (mismo criterio que la política de `UPDATE` sin uso todavía de
-  `alumnos`). **Sin cambios** en esta sesión.
+  dentro del plantel, `administrativo`/`oficina_central` siguen viendo todas
+  las calificaciones del plantel (sin cambio); un perfil con rol `alumno`
+  solo ve las calificaciones cuyo `alumno_id` corresponde al alumno
+  vinculado a su propio perfil (sin cambio); un perfil con rol `docente`
+  solo ve las calificaciones de materias que tiene asignadas en
+  `public.docente_materias` (`exists (select 1 from docente_materias dm
+  where dm.docente_id = auth.uid() and dm.materia_id =
+  calificaciones.materia_id)`) — **antes veía todas las calificaciones del
+  plantel sin importar la materia**, el hueco de mínimo privilegio cerrado
+  en esta sesión.
+- `calificaciones_insert_staff_o_docente_asignado` (reemplaza a
+  `calificaciones_insert_staff_mismo_plantel`) /
+  `calificaciones_update_staff_o_docente_asignado` (reemplaza a
+  `calificaciones_update_staff_mismo_plantel`): staff sigue pudiendo
+  insertar/actualizar cualquier calificación del plantel (sin cambio);
+  `docente` solo puede insertar/actualizar calificaciones de una materia que
+  tenga asignada en `docente_materias` (misma condición `exists` que el
+  SELECT) — antes podía hacerlo en cualquier materia del plantel.
 
 **Cubierta desde el primer commit** por
 `tests/aislamiento-calificaciones.test.ts` (CLAUDE.md 4.3) — ver/no-ver
-materia y calificación ajenas, spoofing de `plantel_id` rechazado por RLS.
+materia y calificación ajenas, spoofing de `plantel_id` rechazado por RLS —
+y, para la restricción por asignación docente<->materia específicamente, por
+`tests/aislamiento-docente-materias.test.ts` (ver detalle en la sección
+"Asignación docente<->materia" arriba).
 
 ## Decisiones técnicas
 
@@ -955,6 +1097,14 @@ cuenta con rol `alumno` no vea las calificaciones/asistencia de otro alumno
 de su propio plantel; cubre también que staff siga viendo todo su plantel
 sin cambios, ver
 supabase/migrations/20260822200144_endurecer_rls_visibilidad_por_rol.sql),
+`tests/aislamiento-docente-materias.test.ts` (asignación docente<->materia,
+ver sección "Asignación docente<->materia" en "Calificaciones" — otro caso
+de aislamiento **dentro** del mismo tenant: un docente sin asignación no ve
+ni puede insertar calificaciones de una materia ajena, con asignación sí
+puede en la suya pero sigue sin poder en otra, y staff no cambia; usa una
+cuenta de docente propia del archivo,
+`test-docente-materias@controlescolar.test`, distinta de la de
+`aislamiento-invitaciones.test.ts` para no competir entre workers),
 `tests/helpers/cuenta-prueba.ts` (helper idempotente de alta/login de
 cuentas de prueba, reutilizado sin cambios por todos los archivos —
 `aislamiento-alumnos.test.ts` no lo extendió: siguió el mismo patrón inline
